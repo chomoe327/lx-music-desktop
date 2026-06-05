@@ -123,80 +123,21 @@ const createTask = async(downloadInfo: LX.Download.ListItem, savePath: string, s
             error: 'download_status_error_write',
             message: err.message,
           },
-          // data: `歌曲保存位置被占用或没有写入权限，请尝试更改歌曲保存目录或重启软件或重启电脑，错误详情：${err.message as string}`,
         })
-        return
-      }
-      // console.log(tryNum[downloadInfo.id])
-      let retryNum = tryNum.get(downloadInfo.id) ?? 0
-      tryNum.set(downloadInfo.id, ++retryNum)
-      if (retryNum > 2) {
-        sendAction(downloadInfo.id, {
-          action: 'error',
-          data: {
-            message: err.message,
-          },
-        })
-        // dispatch('startTask')
         return
       }
       if (err.message?.startsWith('Resume failed')) {
         removeFile(downloadInfo.metadata.filePath).catch(err => {
           console.log('删除不匹配的文件失败：', err.message)
-          // commit('onError', { downloadInfo, errorMsg: '删除不匹配的文件失败：' + err.message })
         }).finally(() => {
-          console.log('正在重试')
-          void dls.get(downloadInfo.id)?.start()
-          // sendAction(downloadInfo.id, {
-          //   action: 'statusText',
-          //   data: 'download_status_error_retrying',
-          // })
+          sendAction(downloadInfo.id, { action: 'refreshUrl' })
         })
         return
       }
-      if (err.code == 'ENOTFOUND') {
-        sendAction(downloadInfo.id, { action: 'refreshUrl' })
-      } else {
-        console.log('Download failed, Attempting Retry')
-        setTimeout(() => {
-          void dls.get(downloadInfo.id)?.start()
-        }, 1000)
-      }
+      sendAction(downloadInfo.id, { action: 'refreshUrl' })
     },
     onFail(response) {
-      let retryNum = tryNum.get(downloadInfo.id) ?? 0
-      tryNum.set(downloadInfo.id, ++retryNum)
-      if (retryNum > 2) {
-        if (response.statusCode) {
-          sendAction(downloadInfo.id, {
-            action: 'error',
-            data: {
-              error: 'download_status_error_response',
-              message: String(response.statusCode),
-            },
-          })
-        } else {
-          sendAction(downloadInfo.id, {
-            action: 'error',
-            data: {},
-          })
-        }
-        return
-      }
-      switch (response.statusCode) {
-        case 401:
-        case 403:
-        case 410:
-          sendAction(downloadInfo.id, { action: 'refreshUrl' })
-          // commit('onError', { downloadInfo, errorMsg: '链接失效' })
-          // refreshUrl.call(_this, commit, downloadInfo, rootState.setting.download.isUseOtherSource)
-          break
-        default:
-          void dls.get(downloadInfo.id)?.start()
-          console.log('正在重试')
-          // commit('setStatusText', { downloadInfo, text: '正在重试' })
-          break
-      }
+      sendAction(downloadInfo.id, { action: 'refreshUrl' })
     },
     onStart() {
       sendAction(downloadInfo.id, { action: 'start' })
@@ -220,7 +161,6 @@ const createTask = async(downloadInfo: LX.Download.ListItem, savePath: string, s
   }
   // commit('setStatusText', { downloadInfo, text: '获取URL中...' })
 
-  tryNum.set(downloadInfo.id, 0)
   dls.set(downloadInfo.id, createDownload(downloadOptions))
 }
 
@@ -268,7 +208,6 @@ export const startTask = async(downloadInfo: LX.Download.ListItem, savePath: str
     //   filePath: path.join(rootState.setting.download.savePath, downloadInfo.metadata.fileName),
     // })
     dl.updateSaveInfo(savePath, downloadInfo.metadata.fileName)
-    if (tryNum.has(downloadInfo.id)) tryNum.set(downloadInfo.id, 0)
     try {
       await dl.start()
     } catch (error) {
