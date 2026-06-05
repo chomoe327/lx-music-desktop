@@ -4,6 +4,7 @@ import {
   downloadTasksCreate,
   downloadTasksRemove,
   downloadTasksUpdate,
+  onOpenApiDownload,
 } from '@renderer/utils/ipc'
 import {
   downloadList,
@@ -15,8 +16,12 @@ import { qualityList } from '..'
 import { proxyCallback } from '@renderer/worker/utils'
 import { arrPush, arrUnshift, joinPath } from '@renderer/utils'
 import { DOWNLOAD_STATUS } from '@common/constants'
-import { proxy } from '../index'
+import { proxy, apiSource, userApi } from '../index'
 import { buildSavePath } from './utils'
+import { filterFileName } from '@common/utils/common'
+import { clipFileNameLength, clipNameLength } from '@common/utils/tools'
+import { rendererSend } from '@common/rendererIpc'
+import { WIN_MAIN_RENDERER_EVENT_NAME } from '@common/ipcNames'
 
 const waitingUpdateTasks = new Map<string, LX.Download.ListItem>()
 let timer: NodeJS.Timeout | null = null
@@ -148,9 +153,12 @@ const getProxy = () => {
  */
 const saveMeta = (downloadInfo: LX.Download.ListItem) => {
   if (downloadInfo.metadata.quality === 'ape') return
+  const isOpenApiTask = downloadInfo.metadata.isOpenApiTask
+  const isEmbedPic = isOpenApiTask ? true : appSetting['download.isEmbedPic']
+  const isEmbedLyric = isOpenApiTask ? true : appSetting['download.isEmbedLyric']
   const isUseOtherSource = appSetting['download.isUseOtherSource']
   const tasks: [Promise<string | null>, Promise<LX.Player.LyricInfo | null>] = [
-    appSetting['download.isEmbedPic']
+    isEmbedPic
       ? downloadInfo.metadata.musicInfo.meta.picUrl
         ? Promise.resolve(downloadInfo.metadata.musicInfo.meta.picUrl)
         : getPicUrl({ musicInfo: downloadInfo.metadata.musicInfo, isRefresh: false, allowToggleSource: isUseOtherSource }).catch(err => {
@@ -158,7 +166,7 @@ const saveMeta = (downloadInfo: LX.Download.ListItem) => {
           return null
         })
       : Promise.resolve(null),
-    appSetting['download.isEmbedLyric']
+    isEmbedLyric
       ? getLyricInfo({ musicInfo: downloadInfo.metadata.musicInfo, isRefresh: false, allowToggleSource: isUseOtherSource }).catch(err => {
         console.log(err)
         return null
@@ -169,8 +177,8 @@ const saveMeta = (downloadInfo: LX.Download.ListItem) => {
     const info = {
       filePath: downloadInfo.metadata.filePath,
       isEmbedLyricLx: appSetting['download.isEmbedLyricLx'],
-      isEmbedLyricT: appSetting['download.isEmbedLyricT'],
-      isEmbedLyricR: appSetting['download.isEmbedLyricR'],
+      isEmbedLyricT: isOpenApiTask ? true : appSetting['download.isEmbedLyricT'],
+      isEmbedLyricR: isOpenApiTask ? true : appSetting['download.isEmbedLyricR'],
       title: downloadInfo.metadata.musicInfo.name,
       artist: downloadInfo.metadata.musicInfo.singer?.replaceAll('、', ';'),
       album: downloadInfo.metadata.musicInfo.meta.albumName,
@@ -185,7 +193,8 @@ const saveMeta = (downloadInfo: LX.Download.ListItem) => {
  * @param downloadInfo 下载任务信息
  */
 const downloadLyric = (downloadInfo: LX.Download.ListItem) => {
-  if (!appSetting['download.isDownloadLrc']) return
+  const isOpenApiTask = downloadInfo.metadata.isOpenApiTask
+  if (!isOpenApiTask && !appSetting['download.isDownloadLrc']) return
   void getLyricInfo({
     musicInfo: downloadInfo.metadata.musicInfo,
     isRefresh: false,
@@ -193,60 +202,105 @@ const downloadLyric = (downloadInfo: LX.Download.ListItem) => {
   }).then(lrcs => {
     if (lrcs.lyric) {
       lrcs.lyric = fixKgLyric(lrcs.lyric)
+      const basePath = downloadInfo.metadata.filePath.substring(0, downloadInfo.metadata.filePath.lastIndexOf('.'))
       const info = {
-        filePath: downloadInfo.metadata.filePath.substring(0, downloadInfo.metadata.filePath.lastIndexOf('.')) + '.lrc',
+        filePath: basePath + '.lrc',
         format: appSetting['download.lrcFormat'],
-        downloadLxlrc: appSetting['download.isDownloadLxLrc'],
-        downloadTlrc: appSetting['download.isDownloadTLrc'],
-        downloadRlrc: appSetting['download.isDownloadRLrc'],
+        downloadLxlrc: isOpenApiTask ? true : appSetting['download.isDownloadLxLrc'],
+        downloadTlrc: isOpenApiTask ? true : appSetting['download.isDownloadTLrc'],
+        downloadRlrc: isOpenApiTask ? true : appSetting['download.isDownloadRLrc'],
       }
       void window.lx.worker.download.saveLrc(lrcs, info)
+      // Open API: also save JSON lyrics
+      if (isOpenApiTask) {
+        void window.lx.worker.download.saveLyricJson(lrcs, basePath + '.lyric.json')
+      }
     }
   })
 }
 
 const getUrl = async(downloadInfo: LX.Download.ListItem, isRefresh: boolean = false) => {
-  let toggleMusicInfo = downloadInfo.metadata.musicInfo.meta.toggleMusicInfo
-  return (toggleMusicInfo ? getMusicUrl({
-    musicInfo: toggleMusicInfo,
-    isRefresh,
-    quality: downloadInfo.metadata.quality,
-    allowToggleSource: false,
-  }) : Promise.reject(new Error('not found'))).catch(() => {
-    return getMusicUrl({
-      musicInfo: downloadInfo.metadata.musicInfo,
-      isRefresh: false,
-      quality: downloadInfo.metadata.quality,
-      allowToggleSource: appSetting['download.isUseOtherSource'],
+  const quality = downloadInfo.metadata.quality
+  const musicInfo = downloadInfo.metadata.musicInfo
+  let usedToggleSource: LX.Music.MusicInfoOnline | undefined
+
+  // Try original source first, with source switching enabled to find requested quality
+  let url = ''
+  let toggleSourceInfo: LX.Music.MusicInfoOnline | undefined
+  try {
+    url = await getMusicUrl({
+      musicInfo,
+      isRefresh,
+      quality,
+      allowToggleSource: true,
+      allowApiSourceSwitch: true,
+      onToggleSource(musicInfo) {
+        usedToggleSource = musicInfo
+      },
     })
-  }).catch(() => '')
+    if (!url) throw new Error('no url')
+  } catch (err) {
+    // Original + all sources failed, try pre-toggled source if available
+    const toggleMusicInfo = musicInfo.meta.toggleMusicInfo
+    if (toggleMusicInfo) {
+      try {
+        url = await getMusicUrl({
+          musicInfo: toggleMusicInfo,
+          isRefresh,
+          quality,
+          allowToggleSource: false,
+          onToggleSource(musicInfo) {
+            toggleSourceInfo = musicInfo
+          },
+        })
+      } catch {
+        url = ''
+      }
+    }
+  }
+
+  if (url && usedToggleSource) {
+    // Record which source was used (different from original)
+    downloadInfo.metadata.actualSource = usedToggleSource.source
+    // Verify song name/singer match
+    const origName = musicInfo.name?.toLowerCase().trim()
+    const origSinger = (musicInfo.singer || '').toLowerCase().trim()
+    const newName = usedToggleSource.name?.toLowerCase().trim()
+    const newSinger = (usedToggleSource.singer || '').toLowerCase().trim()
+    downloadInfo.metadata.versionNote = ''
+    if (origName && newName && !newName.includes(origName) && !origName.includes(newName)) {
+      downloadInfo.metadata.versionNote = `song_name_mismatch: orig="${musicInfo.name}" -> "${usedToggleSource.name}"`
+    }
+    if (origSinger && newSinger && !newSinger.includes(origSinger) && !origSinger.includes(newSinger)) {
+      downloadInfo.metadata.versionNote += (downloadInfo.metadata.versionNote ? '; ' : '') +
+        `singer_mismatch: orig="${musicInfo.singer}" -> "${usedToggleSource.singer}"`
+    }
+  } else if (url && toggleSourceInfo) {
+    downloadInfo.metadata.actualSource = toggleSourceInfo.source
+  } else if (url) {
+    // Original source worked directly, record it
+    downloadInfo.metadata.actualSource = musicInfo.source
+  }
+
+  // Record which API source was active
+  const activeApi = userApi.list.find(a => a.id === apiSource.value)
+  downloadInfo.metadata.apiSourceName = activeApi?.name || apiSource.value || ''
+
+  return url
 }
 const handleRefreshUrl = (downloadInfo: LX.Download.ListItem) => {
   setStatusText(downloadInfo, window.i18n.t('download_status_error_refresh_url'))
-  let toggleMusicInfo = downloadInfo.metadata.musicInfo.meta.toggleMusicInfo
-  ;(toggleMusicInfo ? getMusicUrl({
-    musicInfo: toggleMusicInfo,
-    isRefresh: true,
-    quality: downloadInfo.metadata.quality,
-    allowToggleSource: false,
-  }) : Promise.reject(new Error('not found'))).catch(() => {
-    return getMusicUrl({
-      musicInfo: downloadInfo.metadata.musicInfo,
-      isRefresh: true,
-      quality: downloadInfo.metadata.quality,
-      allowToggleSource: appSetting['download.isUseOtherSource'],
-    })
+  void getUrl(downloadInfo, true).then(url => {
+    if (!url) {
+      handleError(downloadInfo, window.i18n.t('download_status_error_url_failed'))
+      return
+    }
+    setUrl(downloadInfo, url)
+    void window.lx.worker.download.updateUrl(downloadInfo.id, url)
+  }).catch(err => {
+    console.log(err)
+    handleError(downloadInfo, err.message)
   })
-    .catch(() => '')
-    .then(url => {
-    // commit('setStatusText', { downloadInfo, text: '链接刷新成功' })
-      setUrl(downloadInfo, url)
-      void window.lx.worker.download.updateUrl(downloadInfo.id, url)
-    })
-    .catch(err => {
-      console.log(err)
-      handleError(downloadInfo, err.message)
-    })
 }
 const handleError = (downloadInfo: LX.Download.ListItem, message?: string) => {
   setStatus(downloadInfo, DOWNLOAD_STATUS.ERROR, message)
@@ -267,7 +321,14 @@ const handleStartTask = async(downloadInfo: LX.Download.ListItem) => {
     if (downloadInfo.status != DOWNLOAD_STATUS.RUN) return
   }
 
-  const savePath = buildSavePath(downloadInfo)
+  let savePath = buildSavePath(downloadInfo)
+  // Open API: wrap in per-song subdirectory
+  if (downloadInfo.metadata.isOpenApiTask) {
+    const songDir = clipFileNameLength(filterFileName(
+      `${downloadInfo.metadata.musicInfo.name} - ${clipNameLength(downloadInfo.metadata.musicInfo.singer)}`,
+    ))
+    savePath = joinPath(savePath, songDir)
+  }
   const filePath = joinPath(savePath, downloadInfo.metadata.fileName)
   if (downloadInfo.metadata.filePath != filePath) updateFilePath(downloadInfo, filePath)
 
@@ -425,3 +486,90 @@ export const removeDownloadTasks = async(ids: string[]) => {
   void checkStartTask()
   window.app_event.downloadListUpdate()
 }
+
+
+onOpenApiDownload(({ params: { list, quality, listId } }) => {
+  void (async() => {
+    // Build simple-ID -> metadata mapping from raw song JSON
+    const rawSongMap = new Map<string, { name: string, singer: string }>()
+    for (const s of list as any[]) {
+      const rawId = s.songmid || s.songId || s.id || ''
+      rawSongMap.set(rawId, {
+        name: s.name || s.songname || 'Unknown',
+        singer: Array.isArray(s.singer) ? s.singer.join('、') : (s.singer || s.singername || ''),
+      })
+    }
+
+    const rawIds = new Set(rawSongMap.keys())
+    for (const rawId of rawIds) {
+      rendererSend(WIN_MAIN_RENDERER_EVENT_NAME.open_api_download_status, {
+        taskId: rawId,
+        status: 'queued',
+        name: rawSongMap.get(rawId)?.name,
+        singer: rawSongMap.get(rawId)?.singer,
+      })
+    }
+
+    await createDownloadTasks(list, quality, listId)
+
+    // Build simple-ID -> compound-ID mapping from download list items
+    const compoundIdMap = new Map<string, string>()
+    for (const item of downloadList) {
+      if (item.metadata.isOpenApiTask) continue
+      const musicId = item.metadata.musicInfo?.id || ''
+      if (rawIds.has(musicId)) {
+        compoundIdMap.set(item.id, musicId)
+        item.metadata.isOpenApiTask = true
+      }
+    }
+    const compoundIds = new Set(compoundIdMap.keys())
+
+    // Poll download list for status changes
+    const pollInterval = setInterval(() => {
+      let allDone = true
+      for (const item of downloadList) {
+        if (!compoundIds.has(item.id)) continue
+        const status = item.status === 'completed'
+          ? 'completed'
+          : item.status === 'error'
+            ? 'failed'
+            : item.status === 'run'
+              ? 'running'
+              : 'queued'
+
+        if (status !== 'completed' && status !== 'failed') {
+          allDone = false
+        }
+
+        const rawId = compoundIdMap.get(item.id)
+        const meta = rawId ? rawSongMap.get(rawId) : undefined
+        const filePath = item.metadata.filePath || ''
+        const basePath = filePath ? filePath.substring(0, filePath.lastIndexOf('.')) : ''
+        const lyricPath = basePath ? basePath + '.lrc' : ''
+        const lyricJsonPath = basePath ? basePath + '.lyric.json' : ''
+        rendererSend(WIN_MAIN_RENDERER_EVENT_NAME.open_api_download_status, {
+          taskId: item.id,
+          status,
+          error: item.statusText || undefined,
+          filePath: filePath || undefined,
+          lyricPath: lyricPath || undefined,
+          lyricJsonPath: lyricJsonPath || undefined,
+          actualQuality: item.metadata.quality || undefined,
+          actualSource: item.metadata.actualSource || undefined,
+          apiSourceName: item.metadata.apiSourceName || undefined,
+          versionNote: item.metadata.versionNote || undefined,
+          name: meta?.name,
+          singer: meta?.singer,
+          progress: item.progress || undefined,
+          speed: item.speed || undefined,
+        })
+      }
+      if (allDone && compoundIds.size > 0) {
+        clearInterval(pollInterval)
+      }
+    }, 3000)
+
+    // Backup timeout: stop polling after 30 minutes
+    setTimeout(() => { clearInterval(pollInterval) }, 30 * 60 * 1000)
+  })()
+})

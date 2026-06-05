@@ -31,6 +31,21 @@ export const saveLrc = async(lrcData: LX.Music.LyricInfo, info: {
   }
 }
 
+/**
+ * 保存歌词JSON文件（包含所有歌词类型）
+ */
+export const saveLyricJson = async(lrcData: LX.Music.LyricInfo, filePath: string) => {
+  const jsonData = {
+    lyric: lrcData.lyric ?? '',
+    tlyric: lrcData.tlyric ?? '',
+    rlyric: lrcData.rlyric ?? '',
+    lxlyric: lrcData.lxlyric ?? '',
+  }
+  fs.writeFile(filePath, JSON.stringify(jsonData, null, 2), 'utf-8', err => {
+    if (err) console.log(err)
+  })
+}
+
 export const getExt = (type: string): LX.Download.FileExt => {
   switch (type) {
     case 'ape':
@@ -51,16 +66,17 @@ export const getExt = (type: string): LX.Download.FileExt => {
 /**
  * 获取音乐音质
  * @param musicInfo
- * @param type
+ * @param type 请求的音质
  * @param qualityList
  */
 export const getMusicType = (musicInfo: LX.Music.MusicInfoOnline, type: LX.Quality, qualityList: LX.QualityList): LX.Quality => {
-  let list = qualityList[musicInfo.source]
-  if (!list) return '128k'
-  if (!list.includes(type)) type = list[list.length - 1]
+  const _qualitys = musicInfo.meta._qualitys
+  // If the song has the requested quality, use it (auto-switch will handle source resolution)
+  if (_qualitys[type]) return type
+  // Fallback: walk down QUALITYS to find best available within this song
   const rangeType = QUALITYS.slice(QUALITYS.indexOf(type))
-  for (const type of rangeType) {
-    if (musicInfo.meta._qualitys[type]) return type
+  for (const t of rangeType) {
+    if (_qualitys[t]) return t
   }
   return '128k'
 }
@@ -70,9 +86,10 @@ export const getMusicType = (musicInfo: LX.Music.MusicInfoOnline, type: LX.Quali
 // }
 
 export const createDownloadInfo = (musicInfo: LX.Music.MusicInfoOnline, type: LX.Quality, fileName: string, qualityList: LX.QualityList, listId?: string) => {
+  const requestedType = type
   type = getMusicType(musicInfo, type, qualityList)
   let ext = getExt(type)
-  const key = `${musicInfo.id}_${type}_${ext}`
+  const key = `${musicInfo.id}_${requestedType}_${ext}`
   // if (checkExistList(list, musicInfo, type, ext)) return null
   const downloadInfo: LX.Download.ListItem = {
     id: key,

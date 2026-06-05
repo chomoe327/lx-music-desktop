@@ -2,7 +2,8 @@ import http from 'node:http'
 import querystring from 'node:querystring'
 import type { Socket } from 'node:net'
 import { getAddress } from '@common/utils/nodejs'
-import { sendTaskbarButtonClick } from '@main/modules/winMain'
+import { sendTaskbarButtonClick, sendEvent } from '@main/modules/winMain'
+import { WIN_MAIN_RENDERER_EVENT_NAME } from '@common/ipcNames'
 
 const sendResponse = (res: http.ServerResponse, code = 200, msg: string | Record<any, unknown> = 'OK', contentType = 'text/plain; charset=utf-8') => {
   res.writeHead(code, {
@@ -23,6 +24,38 @@ let status: LX.OpenAPI.Status = {
 }
 
 type SubscribeKeys = keyof LX.Player.Status
+
+interface DownloadTaskInfo {
+  id: string
+  name: string
+  singer: string
+  quality: string
+}
+
+interface DownloadTaskDetail {
+  status: string
+  error?: string
+  filePath?: string
+  lyricPath?: string
+  lyricJsonPath?: string
+  actualQuality?: string
+  actualSource?: string
+  apiSourceName?: string
+  versionNote?: string
+  name?: string
+  singer?: string
+}
+
+const downloadTasks = new Map<string, DownloadTaskDetail>()
+
+export const updateDownloadTaskStatus = (taskId: string, status: string, error?: string, extra?: Partial<DownloadTaskDetail>) => {
+  const existing = downloadTasks.get(taskId)
+  downloadTasks.set(taskId, { ...existing, status, error, ...extra })
+}
+
+export const getDownloadTasksStatus = () => {
+  return Array.from(downloadTasks.entries()).map(([id, info]) => ({ id, ...info }))
+}
 
 let httpServer: http.Server
 let sockets = new Set<Socket>()
@@ -85,7 +118,10 @@ const handleSubscribePlayerStatus = (req: http.IncomingMessage, res: http.Server
 const handleStartServer = async(port: number, ip: string) => new Promise<void>((resolve, reject) => {
   playerStatusKeys = Object.keys(global.lx.player_status) as SubscribeKeys[]
   httpServer = http.createServer((req, res): void => {
-    const [endUrl, query] = `/${req.url?.split('/').at(-1) ?? ''}`.split('?')
+    const urlPath = req.url?.split('?')[0] ?? '/'
+    const query = req.url?.split('?')[1] ?? ''
+    // Use full path for matching (not just last segment)
+    const endUrl = urlPath.endsWith('/') ? urlPath.slice(0, -1) : urlPath
     let code = 200
     let msg = 'OK'
     switch (endUrl) {
@@ -202,6 +238,51 @@ const handleStartServer = async(port: number, ip: string) => new Promise<void>((
           msg = 'Error'
         }
         break
+      case '/download': {
+        if (req.method !== 'POST') {
+          code = 405
+          msg = 'Method Not Allowed'
+          break
+        }
+        let body = ''
+        req.on('data', chunk => { body += chunk })
+        req.on('end', () => {
+          try {
+            const { list, quality, listId } = JSON.parse(body)
+            if (!list?.length || !quality) {
+              sendResponse(res, 400, 'Missing list or quality')
+              return
+            }
+            const tasks: DownloadTaskInfo[] = list.map((song: any) => ({
+              id: song.songmid || song.songId || song.id || '',
+              name: song.name || song.songname || 'Unknown',
+              singer: Array.isArray(song.singer) ? song.singer.join('、')
+                : (song.singer || song.singername || ''),
+              quality,
+            }))
+            for (const t of tasks) {
+              downloadTasks.set(t.id, { status: 'queued' })
+            }
+            sendEvent(WIN_MAIN_RENDERER_EVENT_NAME.open_api_download, { list, quality, listId })
+            sendResponse(res, 200, { success: true, queued: tasks.length, tasks }, 'application/json; charset=utf-8')
+          } catch (e: any) {
+            sendResponse(res, 400, e.message)
+          }
+        })
+        return
+      }
+      case '/download/status': {
+        const tasks = getDownloadTasksStatus()
+        const statusCounts = { total: tasks.length, running: 0, completed: 0, failed: 0, waiting: 0 }
+        for (const t of tasks) {
+          if (t.status === 'running') statusCounts.running++
+          else if (t.status === 'completed') statusCounts.completed++
+          else if (t.status === 'failed') statusCounts.failed++
+          else statusCounts.waiting++
+        }
+        sendResponse(res, 200, { ...statusCounts, tasks }, 'application/json; charset=utf-8')
+        return
+      }
       default:
         code = 401
         msg = 'Forbidden'

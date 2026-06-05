@@ -20,7 +20,7 @@ export const createQueryStatement = () => {
 export const createInsertStatement = () => {
   const db = getDB()
   return db.prepare<[LX.DBService.DownloadMusicInfo]>(`
-    INSERT INTO "main"."download_list" ("id", "isComplate", "status", "statusText", "progress_downloaded", "progress_total", "url", "quality", "ext", "fileName", "filePath", "musicInfo", "position")
+    INSERT OR REPLACE INTO "main"."download_list" ("id", "isComplate", "status", "statusText", "progress_downloaded", "progress_total", "url", "quality", "ext", "fileName", "filePath", "musicInfo", "position")
     VALUES (@id, @isComplate, @status, @statusText, @progress_downloaded, @progress_total, @url, @quality, @ext, @fileName, @filePath, @musicInfo, @position)`)
 }
 

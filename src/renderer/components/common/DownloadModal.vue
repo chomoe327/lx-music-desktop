@@ -2,8 +2,23 @@
   <material-modal :show="show" :bg-close="bgClose" :teleport="teleport" @close="handleClose">
     <main :class="$style.main">
       <h2>{{ info.name }}<br>{{ info.singer }}</h2>
-      <base-btn v-for="quality in qualitys" :key="quality.type" :class="$style.btn" @click="handleClick(quality.type)">
-        {{ getTypeName(quality.type) }}{{ quality.size && ` - ${quality.size.toUpperCase()}` }}
+      <h3 v-if="currentSourceName" :class="$style.sourceTip">
+        {{ $t('download__current_source') }}: {{ currentSourceName }}
+      </h3>
+      <base-btn
+        v-for="q in allQualityTiers"
+        :key="q.type"
+        :class="[$style.btn, q.needsSwitch && !q.hasSongQuality ? $style.btnDisabled : '']"
+        :disabled="!q.hasSongQuality"
+        @click="handleClick(q.type)"
+      >
+        {{ getTypeName(q.type) }}{{ q.size && ` - ${q.size.toUpperCase()}` }}
+        <span v-if="q.hasSongQuality && q.needsSwitch" :class="$style.autoSwitch">
+          {{ $t('download__auto_switch') }}
+        </span>
+        <span v-else-if="!q.hasSongQuality" :class="$style.notAvailable">
+          {{ $t('download__not_available') }}
+        </span>
       </base-btn>
     </main>
   </material-modal>
@@ -12,6 +27,8 @@
 <script>
 import { qualityList } from '@renderer/store'
 import { createDownloadTasks } from '@renderer/store/download/action'
+
+const ALL_QUALITY_TIERS = ['flac24bit', 'flac', '320k', '128k']
 
 export default {
   props: {
@@ -49,8 +66,22 @@ export default {
     sourceQualityList() {
       return this.qualityList[this.musicInfo.source] || []
     },
-    qualitys() {
-      return this.info.meta?.qualitys?.filter(quality => this.checkSource(quality.type)) || []
+    currentSourceName() {
+      return this.musicInfo?.source || ''
+    },
+    allQualityTiers() {
+      const _qualitys = this.info.meta?._qualitys || {}
+      return ALL_QUALITY_TIERS.map(type => {
+        const qInfo = _qualitys[type]
+        const hasSongQuality = !!qInfo
+        const sourceSupports = this.sourceQualityList.includes(type)
+        return {
+          type,
+          size: qInfo?.size || '',
+          hasSongQuality,
+          needsSwitch: !sourceSupports,
+        }
+      })
     },
   },
   methods: {
@@ -76,9 +107,6 @@ export default {
           return this.$t('download__normal') + ' ' + quality.toUpperCase()
       }
     },
-    checkSource(quality) {
-      return this.sourceQualityList.includes(quality)
-    },
   },
 }
 </script>
@@ -99,16 +127,44 @@ export default {
     color: var(--color-font);
     line-height: 1.3;
     text-align: center;
-    margin-bottom: 15px;
+    margin-bottom: 10px;
+  }
+  h3 {
+    font-size: 11px;
+    color: var(--color-font-sub);
+    text-align: center;
+    margin-bottom: 12px;
+    opacity: 0.7;
   }
 }
 
 .btn {
   display: block;
   margin-bottom: 15px;
+  position: relative;
   &:last-child {
     margin-bottom: 0;
   }
+}
+
+.btnDisabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.autoSwitch {
+  display: block;
+  font-size: 10px;
+  color: var(--color-primary);
+  line-height: 1.2;
+}
+
+.notAvailable {
+  display: block;
+  font-size: 10px;
+  color: var(--color-font-sub);
+  line-height: 1.2;
+  opacity: 0.6;
 }
 
 </style>

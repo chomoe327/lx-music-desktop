@@ -1,4 +1,4 @@
-import { qualityList } from '@renderer/store'
+import { apiSource, qualityList, userApi } from '@renderer/store'
 import { assertApiSupport } from '@renderer/store/utils'
 import musicSdk from '@renderer/utils/musicSdk'
 import {
@@ -11,11 +11,89 @@ import { appSetting } from '@renderer/store/setting'
 import { langS2T, toNewMusicInfo, toOldMusicInfo } from '@renderer/utils'
 import { requestMsg } from '@renderer/utils/message'
 import { apis } from '@renderer/utils/musicSdk/api-source'
+import { setUserApi } from '@renderer/core/apiSource'
 
 
 const getOtherSourcePromises = new Map()
 const otherSourceCache = new Map<LX.Music.MusicInfo | LX.Download.ListItem, LX.Music.MusicInfoOnline[]>()
 export const existTimeExp = /\[\d{1,2}:.*\d{1,4}\]/
+
+/**
+ * Get the priority score for a user-imported API source.
+ * Higher score = tried first during auto-switch fallback.
+ */
+const getApiSourcePriority = (apiName: string): number => {
+  const name = apiName.toLowerCase()
+  // Tier 1: 赞助 sources (paid, highest quality)
+  if (name.includes('赞助')) return 100
+  // Tier 2: curated quality sources
+  if (name.includes('全豆要')) return 50
+  if (name.includes('长青') || name.includes('长靑')) return 49
+  if (name.includes('念心')) return 48
+  if (name.includes('音乐下载器')) return 47
+  if (name.includes('洛雪音乐源')) return 46
+  if (name.includes('独家音源')) return 45
+  // Tier 3: everything else
+  return 0
+}
+
+/**
+ * Try resolving the song URL by switching to other user-imported API sources
+ * when the current source can't find the song at the requested quality.
+ */
+const tryOtherApiSources = async(
+  musicInfo: LX.Music.MusicInfoOnline,
+  quality: LX.Quality | undefined,
+  onToggleSource: (musicInfo?: LX.Music.MusicInfoOnline) => void,
+  isRefresh: boolean,
+  retryedSource: LX.OnlineSource[],
+): Promise<{
+  url: string
+  musicInfo: LX.Music.MusicInfoOnline
+  quality: LX.Quality
+  isFromCache: boolean
+}> => {
+  const originalApiSource = apiSource.value
+  const otherApis = userApi.list
+    .filter(api => api.id !== originalApiSource)
+    .sort((a, b) => getApiSourcePriority(b.name) - getApiSourcePriority(a.name))
+
+  for (const api of otherApis) {
+    try {
+      console.log(`try api source: ${api.name} (${api.id})`)
+      await setUserApi(api.id)
+      // Wait for the API source to fully initialize
+      if (!(await window.lx.apiInitPromise[0])) {
+        console.log(`api source ${api.name} init failed`)
+        continue
+      }
+
+      // Re-search across all platforms with the new API source
+      const otherSource = await getOtherSource(musicInfo)
+      console.log(`api source ${api.name} found:`, otherSource.length, 'results')
+      if (otherSource.length) {
+        const result = await getOnlineOtherSourceMusicUrl({
+          musicInfos: [...otherSource],
+          onToggleSource,
+          quality,
+          isRefresh,
+          retryedSource,
+        })
+        return result
+      }
+    } catch (err) {
+      console.log(`api source ${api.name} failed:`, err)
+      // Continue to next API source
+    }
+  }
+
+  // Restore original API source
+  if (originalApiSource && apiSource.value !== originalApiSource) {
+    await setUserApi(originalApiSource).catch(() => {})
+  }
+
+  throw new Error(window.i18n.t('toggle_source_failed'))
+}
 
 export const getOtherSource = async(musicInfo: LX.Music.MusicInfo | LX.Download.ListItem, isRefresh = false): Promise<LX.Music.MusicInfoOnline[]> => {
   // if (!isRefresh && musicInfo.id) {
@@ -220,6 +298,16 @@ export const getOnlineOtherSourcePicByLocal = async(musicInfo: LX.Music.MusicInf
 
 export const TRY_QUALITYS_LIST = ['flac24bit', 'flac', '320k'] as const
 type TryQualityType = typeof TRY_QUALITYS_LIST[number]
+
+/** Source platform priority for auto-switch: higher = tried first.
+ *  Order reflects typical quality support across user-imported API sources. */
+const PLATFORM_PRIORITY: Record<string, number> = {
+  mg: 10, // 咪咕 - often has high quality across sources
+  kg: 9, // 酷狗 - frequently supports flac24bit
+  tx: 7, // QQ音乐
+  kw: 5, // 酷我
+  wy: 3, // 网易
+}
 export const getPlayQuality = (highQuality: LX.Quality, musicInfo: LX.Music.MusicInfoOnline): LX.Quality => {
   let type: LX.Quality = '128k'
   if (TRY_QUALITYS_LIST.includes(highQuality as TryQualityType)) {
@@ -247,6 +335,17 @@ export const getOnlineOtherSourceMusicUrl = async({ musicInfos, quality, onToggl
   isFromCache: boolean
 }> => {
   if (!await window.lx.apiInitPromise[0]) throw new Error('source init failed')
+
+  // Sort musicInfos by source priority: prefer platforms that support the requested quality,
+  // then by platform quality reputation. This ensures better sources are tried first.
+  if (quality) {
+    musicInfos.sort((a, b) => {
+      const aHasQuality = a.meta._qualitys[quality] ? 1 : 0
+      const bHasQuality = b.meta._qualitys[quality] ? 1 : 0
+      if (aHasQuality != bHasQuality) return bHasQuality - aHasQuality
+      return (PLATFORM_PRIORITY[b.source] ?? 0) - (PLATFORM_PRIORITY[a.source] ?? 0)
+    })
+  }
 
   let musicInfo: LX.Music.MusicInfoOnline | null = null
   let itemQuality: LX.Quality | null = null
@@ -288,11 +387,12 @@ export const getOnlineOtherSourceMusicUrl = async({ musicInfos, quality, onToggl
 /**
  * 获取在线音乐URL
  */
-export const handleGetOnlineMusicUrl = async({ musicInfo, quality, onToggleSource, isRefresh, allowToggleSource }: {
+export const handleGetOnlineMusicUrl = async({ musicInfo, quality, onToggleSource, isRefresh, allowToggleSource, allowApiSourceSwitch = false }: {
   musicInfo: LX.Music.MusicInfoOnline
   quality?: LX.Quality
   isRefresh: boolean
   allowToggleSource: boolean
+  allowApiSourceSwitch?: boolean
   onToggleSource: (musicInfo?: LX.Music.MusicInfoOnline) => void
 }): Promise<{
   url: string
@@ -327,6 +427,10 @@ export const handleGetOnlineMusicUrl = async({ musicInfo, quality, onToggleSourc
           isRefresh,
           retryedSource: [musicInfo.source],
         })
+      }
+      // No results from current API source -> try other user-imported API sources
+      if (allowApiSourceSwitch) {
+        return tryOtherApiSources(musicInfo, quality, onToggleSource, isRefresh, [musicInfo.source])
       }
       throw err
     })

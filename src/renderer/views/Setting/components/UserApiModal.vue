@@ -72,7 +72,7 @@ export default {
       })
     },
     handleImport() {
-      if (this.userApi.list.length > 20) {
+      if (this.userApi.list.length > 50) {
         this.$dialog({
           message: this.$t('user_api__max_tip'),
           confirmButtonText: this.$t('ok'),

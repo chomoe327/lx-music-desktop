@@ -14,4 +14,4 @@ export const writeMeta = ({ filePath, isEmbedLyricLx, isEmbedLyricT, isEmbedLyri
   setMeta(filePath, { ...meta, lyrics: buildLyrics(lyric, isEmbedLyricLx, isEmbedLyricT, isEmbedLyricR) }, proxy)
 }
 
-export { saveLrc } from './utils'
+export { saveLrc, saveLyricJson } from './utils'

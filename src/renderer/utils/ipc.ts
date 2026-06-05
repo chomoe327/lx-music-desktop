@@ -485,6 +485,12 @@ export const onPlayerAction = (listener: LX.IpcRendererEventListenerParams<{
     rendererOff(WIN_MAIN_RENDERER_EVENT_NAME.player_action_on_button_click, listener)
   }
 }
+export const onOpenApiDownload = (listener: LX.IpcRendererEventListenerParams<{ list: LX.Music.MusicInfoOnline[], quality: LX.Quality, listId?: string }>): RemoveListener => {
+  rendererOn(WIN_MAIN_RENDERER_EVENT_NAME.open_api_download, listener)
+  return () => {
+    rendererOff(WIN_MAIN_RENDERER_EVENT_NAME.open_api_download, listener)
+  }
+}
 // export const setTaskbarThumbnailClip = async(clip: Electron.Rectangle) => {
 //   await rendererInvoke(WIN_MAIN_RENDERER_EVENT_NAME.taskbar_set_thumbnail_clip, clip)
 // }

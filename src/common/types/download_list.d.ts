@@ -60,6 +60,10 @@ declare global {
           fileName: string
           filePath: string
           listId?: string
+          actualSource?: string
+          apiSourceName?: string
+          versionNote?: string
+          isOpenApiTask?: boolean
         }
       }
 
