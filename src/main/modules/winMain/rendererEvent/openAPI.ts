@@ -32,6 +32,7 @@ export default () => {
     singer?: string
     progress?: number
     speed?: string
+    verifyResult?: string
   }>(WIN_MAIN_RENDERER_EVENT_NAME.open_api_download_status, ({ params }) => {
     updateDownloadTaskStatus(params.taskId, params.status, params.error, {
       filePath: params.filePath,
@@ -43,6 +44,9 @@ export default () => {
       versionNote: params.versionNote,
       name: params.name,
       singer: params.singer,
+      progress: params.progress,
+      speed: params.speed,
+      verifyResult: params.verifyResult,
     })
   })
 }

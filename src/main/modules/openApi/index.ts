@@ -44,6 +44,9 @@ interface DownloadTaskDetail {
   versionNote?: string
   name?: string
   singer?: string
+  progress?: number
+  speed?: string
+  verifyResult?: string
 }
 
 const downloadTasks = new Map<string, DownloadTaskDetail>()

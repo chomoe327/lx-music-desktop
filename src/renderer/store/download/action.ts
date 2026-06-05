@@ -309,31 +309,28 @@ const handleRefreshUrl = (downloadInfo: LX.Download.ListItem) => {
   })
 }
 const handleError = (downloadInfo: LX.Download.ListItem, message?: string) => {
-  // During format-verification retries, forward to verifyAndFinalize to try next API source
-  if ((downloadInfo.metadata as any)._retrying) {
-    console.log('handleError during retry for', downloadInfo.id, ':', message)
-    setStatusText(downloadInfo, message || '')
-    void verifyAndFinalize(downloadInfo)
-    return
+  // On any download error, try other API sources before giving up
+  setStatusText(downloadInfo, message || '')
+  if (!(downloadInfo.metadata as any)._retrying) {
+    ;(downloadInfo.metadata as any)._retrying = true
+    ;(downloadInfo.metadata as any)._firstApi = apiSource.value
   }
-  setStatus(downloadInfo, DOWNLOAD_STATUS.ERROR, message)
-  void window.lx.worker.download.removeTask(downloadInfo.id)
   runingTask.delete(downloadInfo.id)
-  void checkStartTask()
+  void verifyAndFinalize(downloadInfo, true)
 }
 
 /**
  * Verify that the downloaded file actually matches the requested quality,
  * and if not, delete the fake file and mark as error so the script retries.
  */
-const verifyAndFinalize = async(downloadInfo: LX.Download.ListItem) => {
+const verifyAndFinalize = async(downloadInfo: LX.Download.ListItem, skipVerify = false) => {
   const filePath = downloadInfo.metadata.filePath
   const requestedQuality = downloadInfo.metadata.quality
   const isLosslessRequest = requestedQuality === 'flac24bit' || requestedQuality === 'flac' || requestedQuality === 'ape' || requestedQuality === 'wav'
 
-  // If retrying and no file was downloaded (URL failure), skip straight to API source switch
-  if ((downloadInfo.metadata as any)._retrying && !filePath) {
-    console.log(`Retry URL failed for ${downloadInfo.id}, trying next API source`)
+  // Download failed (called from handleError): skip verification, go to retry
+  if (skipVerify) {
+    console.log(`Download failed for ${downloadInfo.id}, trying next API source`)
     // Fall through to retry logic below
   } else if (!isLosslessRequest || !filePath) {
     finalize(downloadInfo)
@@ -342,6 +339,7 @@ const verifyAndFinalize = async(downloadInfo: LX.Download.ListItem) => {
     // Read FLAC STREAMINFO to detect actual bit depth
     let isFlac = false
     let isLossless = false
+    let bps = 0
     try {
       const { readFile } = await import('@common/utils/nodejs')
       const buffer = await readFile(filePath)
@@ -354,7 +352,7 @@ const verifyAndFinalize = async(downloadInfo: LX.Download.ListItem) => {
           const b20 = buffer[20] || 0
           const b21 = buffer[21] || 0
           // bps-1 = ((b20 & 0x01) << 4) | ((b21 & 0xF0) >> 4)
-          const bps = (((b20 & 0x01) << 4) | ((b21 & 0xF0) >> 4)) + 1
+          bps = (((b20 & 0x01) << 4) | ((b21 & 0xF0) >> 4)) + 1
           if (requestedQuality === 'flac24bit') {
             isLossless = bps >= 24
           } else {
@@ -367,13 +365,15 @@ const verifyAndFinalize = async(downloadInfo: LX.Download.ListItem) => {
     }
 
     if (isFlac && isLossless) {
+      (downloadInfo.metadata as any)._verifyResult = `OK: ${requestedQuality}`
       finalize(downloadInfo)
       return
     }
 
     // Format mismatch: delete the fake file
-    const reason = !isFlac ? 'not flac' : 'bit depth too low'
+    const reason = !isFlac ? 'not flac' : `bps=${bps}`
     console.log(`Format mismatch: requested ${requestedQuality} but got ${reason}, switching API source`)
+    ;(downloadInfo.metadata as any)._verifyResult = `FAIL: expected ${requestedQuality}, got ${reason}`
 
     try {
       const { removeFile } = await import('@common/utils/nodejs')
@@ -404,8 +404,8 @@ const verifyAndFinalize = async(downloadInfo: LX.Download.ListItem) => {
     console.log(msg)
     setStatusText(downloadInfo, msg)
     try {
-      // Kill previous download task
-      void window.lx.worker.download.removeTask(downloadInfo.id)
+      // Kill previous download task and wait for it to fully stop
+      await window.lx.worker.download.removeTask(downloadInfo.id)
       runingTask.delete(downloadInfo.id)
       // Switch
       setStatusText(downloadInfo, `正在初始化API源: ${nextApi.name}...`)
@@ -425,8 +425,7 @@ const verifyAndFinalize = async(downloadInfo: LX.Download.ListItem) => {
     } catch (err) {
       console.log(`Failed to switch to ${nextApi.name}:`, err)
       setStatusText(downloadInfo, `API源 ${nextApi.name} 初始化失败，尝试下一个...`)
-      // Retry with next API source
-      void verifyAndFinalize(downloadInfo)
+      void verifyAndFinalize(downloadInfo, skipVerify)
     }
     return
   }
@@ -442,7 +441,7 @@ const verifyAndFinalize = async(downloadInfo: LX.Download.ListItem) => {
   }
   void window.lx.worker.download.removeTask(downloadInfo.id)
   runingTask.delete(downloadInfo.id)
-  setStatus(downloadInfo, DOWNLOAD_STATUS.ERROR, 'download_status_error_refresh_url')
+  setStatus(downloadInfo, DOWNLOAD_STATUS.ERROR, `${window.i18n.t('download___status_error')}: all ${triedApis.length} API sources exhausted`)
   void checkStartTask()
 }
 
@@ -701,8 +700,9 @@ onOpenApiDownload(({ params: { list, quality, listId } }) => {
           versionNote: item.metadata.versionNote || undefined,
           name: meta?.name,
           singer: meta?.singer,
-          progress: item.progress || undefined,
+          progress: item.progress ?? undefined,
           speed: item.speed || undefined,
+          verifyResult: (item.metadata as any)._verifyResult || undefined,
         })
       }
       if (allDone && compoundIds.size > 0) {

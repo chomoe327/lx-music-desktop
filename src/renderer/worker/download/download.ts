@@ -17,7 +17,6 @@ import { DOWNLOAD_STATUS } from '@common/constants'
 // window.downloadListFullMap = new Map()
 
 const dls = new Map<string, DownloaderType>()
-const tryNum = new Map<string, number>()
 const taskActions = new Map<string, (action: LX.Download.DownloadTaskActions) => void>()
 const tasks = new Map<string, LX.Download.ListItem>()
 
@@ -116,28 +115,20 @@ const createTask = async(downloadInfo: LX.Download.ListItem, savePath: string, s
     },
     onError(err: any) {
       console.error(err)
-      if (err.code == 'EPERM') {
-        sendAction(downloadInfo.id, {
-          action: 'error',
-          data: {
-            error: 'download_status_error_write',
-            message: err.message,
-          },
-        })
-        return
-      }
-      if (err.message?.startsWith('Resume failed')) {
-        removeFile(downloadInfo.metadata.filePath).catch(err => {
-          console.log('删除不匹配的文件失败：', err.message)
-        }).finally(() => {
-          sendAction(downloadInfo.id, { action: 'refreshUrl' })
-        })
-        return
-      }
-      sendAction(downloadInfo.id, { action: 'refreshUrl' })
+      sendAction(downloadInfo.id, {
+        action: 'error',
+        data: {
+          message: err.message || String(err),
+        },
+      })
     },
     onFail(response) {
-      sendAction(downloadInfo.id, { action: 'refreshUrl' })
+      sendAction(downloadInfo.id, {
+        action: 'error',
+        data: {
+          message: `HTTP ${response.statusCode || 'error'}`,
+        },
+      })
     },
     onStart() {
       sendAction(downloadInfo.id, { action: 'start' })
@@ -227,7 +218,6 @@ export const pauseTask = async(id: string) => {
     dls.delete(id)
     tasks.delete(id)
     taskActions.delete(id)
-    tryNum.delete(id)
 
     try {
       await dl.stop()
@@ -245,7 +235,6 @@ export const removeTask = async(id: string) => {
     dls.delete(id)
     tasks.delete(id)
     taskActions.delete(id)
-    tryNum.delete(id)
 
     try {
       await dl.stop()
