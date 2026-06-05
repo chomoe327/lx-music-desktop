@@ -47,10 +47,18 @@ interface DownloadTaskDetail {
 }
 
 const downloadTasks = new Map<string, DownloadTaskDetail>()
+const downloadSubscribers = new Set<http.ServerResponse<http.IncomingMessage>>()
 
 export const updateDownloadTaskStatus = (taskId: string, status: string, error?: string, extra?: Partial<DownloadTaskDetail>) => {
-  const existing = downloadTasks.get(taskId)
-  downloadTasks.set(taskId, { ...existing, status, error, ...extra })
+  const existing = downloadTasks.get(taskId) ?? {}
+  const updated: DownloadTaskDetail = { ...existing, status, error, ...extra }
+  downloadTasks.set(taskId, updated)
+  // Push to SSE subscribers
+  for (const sub of downloadSubscribers) {
+    try {
+      sub.write(`data: ${JSON.stringify({ id: taskId, ...updated })}\n\n`)
+    } catch { /* connection dead */ }
+  }
 }
 
 export const getDownloadTasksStatus = () => {
@@ -96,7 +104,7 @@ const handleSendAllLyric = (res: http.ServerResponse<http.IncomingMessage>) => {
 }
 const handleSubscribePlayerStatus = (req: http.IncomingMessage, res: http.ServerResponse<http.IncomingMessage>, query?: string) => {
   res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
+    'Content-Type': 'text/event-stream; charset=utf-8',
     Connection: 'keep-alive',
     'Cache-Control': 'no-cache',
     'Access-Control-Allow-Origin': '*',
@@ -271,6 +279,24 @@ const handleStartServer = async(port: number, ip: string) => new Promise<void>((
         })
         return
       }
+      case '/subscribe-download-status':
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          Connection: 'keep-alive',
+          'Cache-Control': 'no-cache',
+          'Access-Control-Allow-Origin': '*',
+        })
+        req.socket.setTimeout(0)
+        downloadSubscribers.add(res)
+        // Send current state immediately
+        for (const [id, info] of downloadTasks) {
+          res.write(`data: ${JSON.stringify({ id, ...info })}\n\n`)
+        }
+        req.on('close', () => {
+          downloadSubscribers.delete(res)
+          res.end()
+        })
+        return
       case '/download/status': {
         const tasks = getDownloadTasksStatus()
         const statusCounts = { total: tasks.length, running: 0, completed: 0, failed: 0, waiting: 0 }

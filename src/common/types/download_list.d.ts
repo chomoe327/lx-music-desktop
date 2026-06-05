@@ -52,7 +52,7 @@ declare global {
         progress: number
         speed: string
         writeQueue: number
-        metadata: {
+          metadata: {
           musicInfo: LX.Music.MusicInfoOnline
           url: string | null
           quality: LX.Quality
@@ -64,6 +64,7 @@ declare global {
           apiSourceName?: string
           versionNote?: string
           isOpenApiTask?: boolean
+          triedApiSources?: string[]
         }
       }
 

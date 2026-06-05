@@ -70,15 +70,10 @@ export const getExt = (type: string): LX.Download.FileExt => {
  * @param qualityList
  */
 export const getMusicType = (musicInfo: LX.Music.MusicInfoOnline, type: LX.Quality, qualityList: LX.QualityList): LX.Quality => {
-  const _qualitys = musicInfo.meta._qualitys
-  // If the song has the requested quality, use it (auto-switch will handle source resolution)
-  if (_qualitys[type]) return type
-  // Fallback: walk down QUALITYS to find best available within this song
-  const rangeType = QUALITYS.slice(QUALITYS.indexOf(type))
-  for (const t of rangeType) {
-    if (_qualitys[t]) return t
-  }
-  return '128k'
+  // Always keep the requested quality — auto-switch will try all API sources
+  // to find one that supports it. Do NOT downgrade based on _qualitys
+  // because the .lxmc export may have incomplete quality data.
+  return type
 }
 
 // const checkExistList = (list: LX.Download.ListItem[], musicInfo: LX.Music.MusicInfo, type: LX.Quality, ext: string): boolean => {

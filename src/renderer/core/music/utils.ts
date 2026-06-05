@@ -47,6 +47,7 @@ const tryOtherApiSources = async(
   onToggleSource: (musicInfo?: LX.Music.MusicInfoOnline) => void,
   isRefresh: boolean,
   retryedSource: LX.OnlineSource[],
+  onApiSourceswitch?: (apiName: string) => void,
 ): Promise<{
   url: string
   musicInfo: LX.Music.MusicInfoOnline
@@ -61,6 +62,10 @@ const tryOtherApiSources = async(
   for (const api of otherApis) {
     try {
       console.log(`try api source: ${api.name} (${api.id})`)
+      // Clear stale cache entries for this musicInfo before switching API source
+      // (cache keyed by musicInfo ref/ID only, ignoring apiSource changes)
+      otherSourceCache.delete(musicInfo)
+      getOtherSourcePromises.clear()
       await setUserApi(api.id)
       // Wait for the API source to fully initialize
       if (!(await window.lx.apiInitPromise[0])) {
@@ -68,8 +73,11 @@ const tryOtherApiSources = async(
         continue
       }
 
+      // Notify that we switched to this API source
+      onApiSourceswitch?.(api.name)
+
       // Re-search across all platforms with the new API source
-      const otherSource = await getOtherSource(musicInfo)
+      const otherSource = await getOtherSource(musicInfo, true)
       console.log(`api source ${api.name} found:`, otherSource.length, 'results')
       if (otherSource.length) {
         const result = await getOnlineOtherSourceMusicUrl({
@@ -100,7 +108,7 @@ export const getOtherSource = async(musicInfo: LX.Music.MusicInfo | LX.Download.
   //   const cachedInfo = await getOtherSourceFromStore(musicInfo.id)
   //   if (cachedInfo.length) return cachedInfo
   // }
-  if (otherSourceCache.has(musicInfo)) return otherSourceCache.get(musicInfo)!
+  if (!isRefresh && otherSourceCache.has(musicInfo)) return otherSourceCache.get(musicInfo)!
   let key: string
   let searchMusicInfo: {
     name: string
@@ -128,7 +136,7 @@ export const getOtherSource = async(musicInfo: LX.Music.MusicInfo | LX.Download.
       interval: musicInfo.interval ?? '',
     }
   }
-  if (getOtherSourcePromises.has(key)) return getOtherSourcePromises.get(key)
+  if (!isRefresh && getOtherSourcePromises.has(key)) return getOtherSourcePromises.get(key)
 
   const promise = new Promise<LX.Music.MusicInfoOnline[]>((resolve, reject) => {
     let timeout: null | NodeJS.Timeout = setTimeout(() => {
@@ -387,13 +395,14 @@ export const getOnlineOtherSourceMusicUrl = async({ musicInfos, quality, onToggl
 /**
  * 获取在线音乐URL
  */
-export const handleGetOnlineMusicUrl = async({ musicInfo, quality, onToggleSource, isRefresh, allowToggleSource, allowApiSourceSwitch = false }: {
+export const handleGetOnlineMusicUrl = async({ musicInfo, quality, onToggleSource, isRefresh, allowToggleSource, allowApiSourceSwitch = false, onApiSourceSwitch }: {
   musicInfo: LX.Music.MusicInfoOnline
   quality?: LX.Quality
   isRefresh: boolean
   allowToggleSource: boolean
   allowApiSourceSwitch?: boolean
   onToggleSource: (musicInfo?: LX.Music.MusicInfoOnline) => void
+  onApiSourceSwitch?: (apiName: string) => void
 }): Promise<{
   url: string
   musicInfo: LX.Music.MusicInfoOnline
@@ -428,14 +437,14 @@ export const handleGetOnlineMusicUrl = async({ musicInfo, quality, onToggleSourc
           retryedSource: [musicInfo.source],
         })
       }
-      // No results from current API source -> try other user-imported API sources
       if (allowApiSourceSwitch) {
-        return tryOtherApiSources(musicInfo, quality, onToggleSource, isRefresh, [musicInfo.source])
+        return tryOtherApiSources(musicInfo, quality, onToggleSource, isRefresh, [musicInfo.source], onApiSourceSwitch)
       }
       throw err
     })
   })
 }
+
 
 
 export const getOnlineOtherSourcePicUrl = async({ musicInfos, onToggleSource, isRefresh, retryedSource = [] }: {

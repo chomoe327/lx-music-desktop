@@ -14,6 +14,7 @@ import { getMusicUrl, getPicUrl, getLyricInfo } from '@renderer/core/music/onlin
 import { appSetting } from '../setting'
 import { qualityList } from '..'
 import { proxyCallback } from '@renderer/worker/utils'
+import { setUserApi } from '@renderer/core/apiSource'
 import { arrPush, arrUnshift, joinPath } from '@renderer/utils'
 import { DOWNLOAD_STATUS } from '@common/constants'
 import { proxy, apiSource, userApi } from '../index'
@@ -220,6 +221,8 @@ const downloadLyric = (downloadInfo: LX.Download.ListItem) => {
 }
 
 const getUrl = async(downloadInfo: LX.Download.ListItem, isRefresh: boolean = false) => {
+  // Force re-resolution when retrying after format failure (skip URL cache)
+  const forceRefresh = isRefresh || (downloadInfo.metadata as any)._retrying
   const quality = downloadInfo.metadata.quality
   const musicInfo = downloadInfo.metadata.musicInfo
   let usedToggleSource: LX.Music.MusicInfoOnline | undefined
@@ -230,12 +233,15 @@ const getUrl = async(downloadInfo: LX.Download.ListItem, isRefresh: boolean = fa
   try {
     url = await getMusicUrl({
       musicInfo,
-      isRefresh,
+      isRefresh: forceRefresh,
       quality,
       allowToggleSource: true,
-      allowApiSourceSwitch: true,
+      allowApiSourceSwitch: !forceRefresh, // Don't double-switch API source during retry
       onToggleSource(musicInfo) {
         usedToggleSource = musicInfo
+      },
+      onApiSourceSwitch(apiName) {
+        setStatusText(downloadInfo, `\u6362\u6e90→${apiName}`)
       },
     })
     if (!url) throw new Error('no url')
@@ -303,9 +309,149 @@ const handleRefreshUrl = (downloadInfo: LX.Download.ListItem) => {
   })
 }
 const handleError = (downloadInfo: LX.Download.ListItem, message?: string) => {
+  // During format-verification retries, forward to verifyAndFinalize to try next API source
+  if ((downloadInfo.metadata as any)._retrying) {
+    console.log('handleError during retry for', downloadInfo.id, ':', message)
+    setStatusText(downloadInfo, message || '')
+    void verifyAndFinalize(downloadInfo)
+    return
+  }
   setStatus(downloadInfo, DOWNLOAD_STATUS.ERROR, message)
   void window.lx.worker.download.removeTask(downloadInfo.id)
   runingTask.delete(downloadInfo.id)
+  void checkStartTask()
+}
+
+/**
+ * Verify that the downloaded file actually matches the requested quality,
+ * and if not, delete the fake file and mark as error so the script retries.
+ */
+const verifyAndFinalize = async(downloadInfo: LX.Download.ListItem) => {
+  const filePath = downloadInfo.metadata.filePath
+  const requestedQuality = downloadInfo.metadata.quality
+  const isLosslessRequest = requestedQuality === 'flac24bit' || requestedQuality === 'flac' || requestedQuality === 'ape' || requestedQuality === 'wav'
+
+  // If retrying and no file was downloaded (URL failure), skip straight to API source switch
+  if ((downloadInfo.metadata as any)._retrying && !filePath) {
+    console.log(`Retry URL failed for ${downloadInfo.id}, trying next API source`)
+    // Fall through to retry logic below
+  } else if (!isLosslessRequest || !filePath) {
+    finalize(downloadInfo)
+    return
+  } else {
+    // Read FLAC STREAMINFO to detect actual bit depth
+    let isFlac = false
+    let isLossless = false
+    try {
+      const { readFile } = await import('@common/utils/nodejs')
+      const buffer = await readFile(filePath)
+      if (buffer && buffer.length >= 30) {
+        // "fLaC" magic at bytes 0-3
+        isFlac = buffer[0] === 0x66 && buffer[1] === 0x4C && buffer[2] === 0x61 && buffer[3] === 0x43
+        if (isFlac) {
+          // STREAMINFO block starts at byte 8, 34 bytes
+          // Bytes 18-25: sample rate (20b), channels-1 (3b), bps-1 (5b), total samples (36b)
+          const b20 = buffer[20] || 0
+          const b21 = buffer[21] || 0
+          // bps-1 = ((b20 & 0x01) << 4) | ((b21 & 0xF0) >> 4)
+          const bps = (((b20 & 0x01) << 4) | ((b21 & 0xF0) >> 4)) + 1
+          if (requestedQuality === 'flac24bit') {
+            isLossless = bps >= 24
+          } else {
+            isLossless = bps >= 16
+          }
+        }
+      }
+    } catch {
+      // Can't read, assume OK
+    }
+
+    if (isFlac && isLossless) {
+      finalize(downloadInfo)
+      return
+    }
+
+    // Format mismatch: delete the fake file
+    const reason = !isFlac ? 'not flac' : 'bit depth too low'
+    console.log(`Format mismatch: requested ${requestedQuality} but got ${reason}, switching API source`)
+
+    try {
+      const { removeFile } = await import('@common/utils/nodejs')
+      await removeFile(filePath)
+    } catch { /* ignore */ }
+  }
+
+  // Track tried API sources (persist across retries of same task)
+  if (!(downloadInfo.metadata as any)._triedApis) {
+    (downloadInfo.metadata as any)._triedApis = []
+    ;(downloadInfo.metadata as any)._firstApi = apiSource.value
+  }
+  const triedApis: string[] = (downloadInfo.metadata as any)._triedApis
+  const firstApi: string | null = (downloadInfo.metadata as any)._firstApi
+  if (apiSource.value && !triedApis.includes(apiSource.value)) {
+    triedApis.push(apiSource.value)
+  }
+
+  // Find next untried API source (try all, priority sponsors first)
+  const priorityApis = userApi.list.filter(a =>
+    a.name.includes('赞助') || a.name.includes('ikun') || a.name.includes('聆澜'),
+  )
+  const otherApis = userApi.list.filter(a => !priorityApis.includes(a))
+  const orderedApis = [...priorityApis, ...otherApis]
+  const nextApi = orderedApis.find(a => !triedApis.includes(a.id))
+  if (nextApi) {
+    const msg = `[换源重试] ${triedApis.length + 1}/${orderedApis.length}: ${nextApi.name}`
+    console.log(msg)
+    setStatusText(downloadInfo, msg)
+    try {
+      // Kill previous download task
+      void window.lx.worker.download.removeTask(downloadInfo.id)
+      runingTask.delete(downloadInfo.id)
+      // Switch
+      setStatusText(downloadInfo, `正在初始化API源: ${nextApi.name}...`)
+      await setUserApi(nextApi.id)
+      setStatusText(downloadInfo, `等待API源就绪: ${nextApi.name}...`)
+      await new Promise(resolve => setTimeout(resolve, 2000))
+      await window.lx.apiInitPromise[0]
+      // Reset URL and restart
+      setStatusText(downloadInfo, `正在通过 ${nextApi.name} 重新下载...`)
+      downloadInfo.metadata.url = null
+      downloadInfo.metadata.actualSource = ''
+      downloadInfo.progress = 0
+      downloadInfo.downloaded = 0
+      downloadInfo.total = 0
+      ;(downloadInfo.metadata as any)._retrying = true
+      void startTask(downloadInfo)
+    } catch (err) {
+      console.log(`Failed to switch to ${nextApi.name}:`, err)
+      setStatusText(downloadInfo, `API源 ${nextApi.name} 初始化失败，尝试下一个...`)
+      // Retry with next API source
+      void verifyAndFinalize(downloadInfo)
+    }
+    return
+  }
+
+  // All API sources exhausted — restore original source FIRST, then mark error
+  console.log(`[换源重试] 全部 ${triedApis.length} 个API源已遍历完毕，格式校验仍未通过`)
+  ;(downloadInfo.metadata as any)._retrying = false
+  if (firstApi && apiSource.value !== firstApi) {
+    setStatusText(downloadInfo, '换源重试结束，正在恢复原始API源...')
+    await setUserApi(firstApi)
+    await new Promise(resolve => setTimeout(resolve, 2000))
+    await window.lx.apiInitPromise[0]
+  }
+  void window.lx.worker.download.removeTask(downloadInfo.id)
+  runingTask.delete(downloadInfo.id)
+  setStatus(downloadInfo, DOWNLOAD_STATUS.ERROR, 'download_status_error_refresh_url')
+  void checkStartTask()
+}
+
+const finalize = (downloadInfo: LX.Download.ListItem) => {
+  saveMeta(downloadInfo)
+  downloadLyric(downloadInfo)
+  void window.lx.worker.download.removeTask(downloadInfo.id)
+  runingTask.delete(downloadInfo.id)
+  setStatus(downloadInfo, DOWNLOAD_STATUS.COMPLETED)
   void checkStartTask()
 }
 
@@ -342,12 +488,7 @@ const handleStartTask = async(downloadInfo: LX.Download.ListItem) => {
         break
       case 'complete':
         downloadInfo.progress = 100
-        saveMeta(downloadInfo)
-        downloadLyric(downloadInfo)
-        void window.lx.worker.download.removeTask(downloadInfo.id)
-        runingTask.delete(downloadInfo.id)
-        setStatus(downloadInfo, DOWNLOAD_STATUS.COMPLETED)
-        void checkStartTask()
+        void verifyAndFinalize(downloadInfo)
         break
       case 'refreshUrl':
         handleRefreshUrl(downloadInfo)
