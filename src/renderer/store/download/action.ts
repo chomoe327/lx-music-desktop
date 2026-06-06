@@ -316,7 +316,8 @@ const handleError = (downloadInfo: LX.Download.ListItem, message?: string) => {
     ;(downloadInfo.metadata as any)._firstApi = apiSource.value
   }
   runingTask.delete(downloadInfo.id)
-  void verifyAndFinalize(downloadInfo, true)
+  // Brief delay so SSE poll can capture the error before source switch
+  setTimeout(() => { void verifyAndFinalize(downloadInfo, true) }, 500)
 }
 
 /**
@@ -364,16 +365,19 @@ const verifyAndFinalize = async(downloadInfo: LX.Download.ListItem, skipVerify =
       // Can't read, assume OK
     }
 
-    if (isFlac && isLossless) {
-      (downloadInfo.metadata as any)._verifyResult = `OK: ${requestedQuality}`
-      finalize(downloadInfo)
-      return
-    }
+  if (isFlac && isLossless) {
+    (downloadInfo.metadata as any)._verifyResult = `OK: ${requestedQuality}`
+    setStatusText(downloadInfo, `校验通过: ${requestedQuality}`)
+    finalize(downloadInfo)
+    return
+  }
 
-    // Format mismatch: delete the fake file
-    const reason = !isFlac ? 'not flac' : `bps=${bps}`
-    console.log(`Format mismatch: requested ${requestedQuality} but got ${reason}, switching API source`)
-    ;(downloadInfo.metadata as any)._verifyResult = `FAIL: expected ${requestedQuality}, got ${reason}`
+  // Format mismatch: delete the fake file
+  const reason = !isFlac ? 'not flac' : `bps=${bps}`
+  console.log(`Format mismatch: requested ${requestedQuality} but got ${reason}, switching API source`)
+  ;(downloadInfo.metadata as any)._verifyResult = `FAIL: expected ${requestedQuality}, got ${reason}`
+  setStatusText(downloadInfo, `校验失败: ${reason}, 换源重试`)
+  await new Promise(resolve => setTimeout(resolve, 100))
 
     try {
       const { removeFile } = await import('@common/utils/nodejs')
@@ -398,9 +402,11 @@ const verifyAndFinalize = async(downloadInfo: LX.Download.ListItem, skipVerify =
   )
   const otherApis = userApi.list.filter(a => !priorityApis.includes(a))
   const orderedApis = [...priorityApis, ...otherApis]
+  console.log(`[verifyAndFinalize] skipVerify=${skipVerify} triedApis=${JSON.stringify(triedApis)} userApi.list=${userApi.list.length} orderedApis=${orderedApis.length} apiSource=${apiSource.value}`)
   const nextApi = orderedApis.find(a => !triedApis.includes(a.id))
   if (nextApi) {
-    const msg = `[换源重试] ${triedApis.length + 1}/${orderedApis.length}: ${nextApi.name}`
+    const reason = (downloadInfo.metadata as any)._verifyResult || ''
+    const msg = `${reason} | [换源重试] ${triedApis.length + 1}/${orderedApis.length}: ${nextApi.name}`
     console.log(msg)
     setStatusText(downloadInfo, msg)
     try {
