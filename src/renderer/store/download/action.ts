@@ -74,9 +74,44 @@ const addTasks = async(list: LX.Download.ListItem[]) => {
   window.app_event.downloadListUpdate()
 }
 
+const getOpenApiStatus = (status: LX.Download.DownloadTaskStatus) => status === DOWNLOAD_STATUS.COMPLETED
+  ? 'completed'
+  : status === DOWNLOAD_STATUS.ERROR
+    ? 'failed'
+    : status === DOWNLOAD_STATUS.RUN
+      ? 'running'
+      : 'queued'
+
+const sendOpenApiDownloadStatus = (downloadInfo: LX.Download.ListItem) => {
+  if (!downloadInfo.metadata.isOpenApiTask) return
+  const meta = downloadInfo.metadata as any
+  const taskId = meta.openApiRawId || downloadInfo.metadata.musicInfo?.id || downloadInfo.id
+  const filePath = downloadInfo.metadata.filePath || ''
+  const basePath = filePath ? filePath.substring(0, filePath.lastIndexOf('.')) : ''
+  rendererSend(WIN_MAIN_RENDERER_EVENT_NAME.open_api_download_status, {
+    taskId,
+    status: getOpenApiStatus(downloadInfo.status),
+    error: downloadInfo.statusText || undefined,
+    filePath: filePath || undefined,
+    lyricPath: basePath ? basePath + '.lrc' : undefined,
+    lyricJsonPath: basePath ? basePath + '.lyric.json' : undefined,
+    actualQuality: downloadInfo.metadata.quality || undefined,
+    actualSource: downloadInfo.metadata.actualSource || undefined,
+    apiSourceName: downloadInfo.metadata.apiSourceName || undefined,
+    versionNote: downloadInfo.metadata.versionNote || undefined,
+    name: meta.openApiName || downloadInfo.metadata.musicInfo?.name,
+    singer: meta.openApiSinger || downloadInfo.metadata.musicInfo?.singer,
+    progress: downloadInfo.progress ?? undefined,
+    speed: downloadInfo.speed || undefined,
+    verifyResult: meta._verifyResult || undefined,
+  })
+}
+
 const setStatusText = (downloadInfo: LX.Download.ListItem, text: string) => { // 设置状态文本
+  if (downloadInfo.statusText == text) return
   downloadInfo.statusText = text
   throttleUpdateTask([downloadInfo])
+  sendOpenApiDownloadStatus(downloadInfo)
 }
 
 const setUrl = (downloadInfo: LX.Download.ListItem, url: string) => {
@@ -87,6 +122,22 @@ const setUrl = (downloadInfo: LX.Download.ListItem, url: string) => {
 const updateFilePath = (downloadInfo: LX.Download.ListItem, filePath: string) => {
   downloadInfo.metadata.filePath = filePath
   throttleUpdateTask([downloadInfo])
+  sendOpenApiDownloadStatus(downloadInfo)
+}
+
+const updateApiSourceName = (downloadInfo: LX.Download.ListItem, apiId = apiSource.value, emit = true) => {
+  const activeApi = userApi.list.find(a => a.id === apiId)
+  downloadInfo.metadata.apiSourceName = activeApi?.name || apiId || ''
+  throttleUpdateTask([downloadInfo])
+  if (emit) sendOpenApiDownloadStatus(downloadInfo)
+}
+
+const resetDownloadProgress = (downloadInfo: LX.Download.ListItem) => {
+  downloadInfo.progress = 0
+  downloadInfo.downloaded = 0
+  downloadInfo.total = 0
+  downloadInfo.speed = ''
+  downloadInfo.writeQueue = 0
 }
 
 const setProgress = (downloadInfo: LX.Download.ListItem, progress: LX.Download.ProgressInfo) => {
@@ -102,6 +153,7 @@ const setProgress = (downloadInfo: LX.Download.ListItem, progress: LX.Download.P
     downloadInfo.progress = progress.progress
   }
   throttleUpdateTask([downloadInfo])
+  sendOpenApiDownloadStatus(downloadInfo)
 }
 
 const setStatus = (downloadInfo: LX.Download.ListItem, status: LX.Download.DownloadTaskStatus, statusText?: string) => { // 设置状态及状态文本
@@ -134,6 +186,7 @@ const setStatus = (downloadInfo: LX.Download.ListItem, status: LX.Download.Downl
   downloadInfo.statusText = statusText
   downloadInfo.status = status
   throttleUpdateTask([downloadInfo])
+  sendOpenApiDownloadStatus(downloadInfo)
 }
 
 // 修复 1.1.x版本 酷狗源歌词格式
@@ -236,7 +289,9 @@ const getUrl = async(downloadInfo: LX.Download.ListItem, isRefresh: boolean = fa
       isRefresh: forceRefresh,
       quality,
       allowToggleSource: true,
-      allowApiSourceSwitch: !forceRefresh, // Don't double-switch API source during retry
+      // Keep the built-in switch limited to platform sources (wy/kg/tx/kw/mg).
+      // Custom API source switching is handled by verifyAndFinalize() below.
+      allowApiSourceSwitch: false,
       onToggleSource(musicInfo) {
         usedToggleSource = musicInfo
       },
@@ -289,8 +344,7 @@ const getUrl = async(downloadInfo: LX.Download.ListItem, isRefresh: boolean = fa
   }
 
   // Record which API source was active
-  const activeApi = userApi.list.find(a => a.id === apiSource.value)
-  downloadInfo.metadata.apiSourceName = activeApi?.name || apiSource.value || ''
+  updateApiSourceName(downloadInfo)
 
   return url
 }
@@ -308,12 +362,23 @@ const handleRefreshUrl = (downloadInfo: LX.Download.ListItem) => {
     handleError(downloadInfo, err.message)
   })
 }
+
+const normalizeRetryReason = (message?: string) => {
+  const reason = (message || 'download failed').split(' | [换源重试]')[0].trim()
+  return reason || 'download failed'
+}
+
 const handleError = (downloadInfo: LX.Download.ListItem, message?: string) => {
+  const meta = downloadInfo.metadata as any
+  if (meta._retryPending) return
+
   // On any download error, try other API sources before giving up
-  setStatusText(downloadInfo, message || '')
-  if (!(downloadInfo.metadata as any)._retrying) {
-    ;(downloadInfo.metadata as any)._retrying = true
-    ;(downloadInfo.metadata as any)._firstApi = apiSource.value
+  meta._retryPending = true
+  meta._retryReason = normalizeRetryReason(message)
+  setStatusText(downloadInfo, meta._retryReason)
+  if (!meta._retrying) {
+    meta._retrying = true
+    meta._firstApi = apiSource.value
   }
   runingTask.delete(downloadInfo.id)
   // Brief delay so SSE poll can capture the error before source switch
@@ -332,6 +397,8 @@ const verifyAndFinalize = async(downloadInfo: LX.Download.ListItem, skipVerify =
   // Download failed (called from handleError): skip verification, go to retry
   if (skipVerify) {
     console.log(`Download failed for ${downloadInfo.id}, trying next API source`)
+    ;(downloadInfo.metadata as any)._verifyResult = ''
+    ;(downloadInfo.metadata as any)._retryReason = normalizeRetryReason((downloadInfo.metadata as any)._retryReason)
     // Fall through to retry logic below
   } else if (!isLosslessRequest || !filePath) {
     finalize(downloadInfo)
@@ -405,7 +472,9 @@ const verifyAndFinalize = async(downloadInfo: LX.Download.ListItem, skipVerify =
   console.log(`[verifyAndFinalize] skipVerify=${skipVerify} triedApis=${JSON.stringify(triedApis)} userApi.list=${userApi.list.length} orderedApis=${orderedApis.length} apiSource=${apiSource.value}`)
   const nextApi = orderedApis.find(a => !triedApis.includes(a.id))
   if (nextApi) {
-    const reason = (downloadInfo.metadata as any)._verifyResult || ''
+    const reason = skipVerify
+      ? ((downloadInfo.metadata as any)._retryReason || 'download failed')
+      : ((downloadInfo.metadata as any)._verifyResult || '')
     const msg = `${reason} | [换源重试] ${triedApis.length + 1}/${orderedApis.length}: ${nextApi.name}`
     console.log(msg)
     setStatusText(downloadInfo, msg)
@@ -414,19 +483,21 @@ const verifyAndFinalize = async(downloadInfo: LX.Download.ListItem, skipVerify =
       await window.lx.worker.download.removeTask(downloadInfo.id)
       runingTask.delete(downloadInfo.id)
       // Switch
+      updateApiSourceName(downloadInfo, nextApi.id, false)
+      resetDownloadProgress(downloadInfo)
       setStatusText(downloadInfo, `正在初始化API源: ${nextApi.name}...`)
       await setUserApi(nextApi.id)
+      updateApiSourceName(downloadInfo, nextApi.id, false)
       setStatusText(downloadInfo, `等待API源就绪: ${nextApi.name}...`)
       await new Promise(resolve => setTimeout(resolve, 2000))
       await window.lx.apiInitPromise[0]
       // Reset URL and restart
-      setStatusText(downloadInfo, `正在通过 ${nextApi.name} 重新下载...`)
       downloadInfo.metadata.url = null
       downloadInfo.metadata.actualSource = ''
-      downloadInfo.progress = 0
-      downloadInfo.downloaded = 0
-      downloadInfo.total = 0
+      resetDownloadProgress(downloadInfo)
       ;(downloadInfo.metadata as any)._retrying = true
+      ;(downloadInfo.metadata as any)._retryPending = false
+      setStatusText(downloadInfo, `正在通过 ${nextApi.name} 重新下载...`)
       void startTask(downloadInfo)
     } catch (err) {
       console.log(`Failed to switch to ${nextApi.name}:`, err)
@@ -447,6 +518,7 @@ const verifyAndFinalize = async(downloadInfo: LX.Download.ListItem, skipVerify =
   }
   void window.lx.worker.download.removeTask(downloadInfo.id)
   runingTask.delete(downloadInfo.id)
+  ;(downloadInfo.metadata as any)._retryPending = false
   setStatus(downloadInfo, DOWNLOAD_STATUS.ERROR, `${window.i18n.t('download___status_error')}: all ${triedApis.length} API sources exhausted`)
   void checkStartTask()
 }
@@ -462,6 +534,7 @@ const finalize = (downloadInfo: LX.Download.ListItem) => {
 
 const handleStartTask = async(downloadInfo: LX.Download.ListItem) => {
   if (!downloadInfo.metadata.url) {
+    updateApiSourceName(downloadInfo)
     setStatusText(downloadInfo, window.i18n.t('download_status_url_getting'))
     const url = await getUrl(downloadInfo)
     if (!url) {
@@ -516,7 +589,11 @@ const handleStartTask = async(downloadInfo: LX.Download.ListItem) => {
   }), getProxy())
 }
 const startTask = async(downloadInfo: LX.Download.ListItem) => {
-  setStatus(downloadInfo, DOWNLOAD_STATUS.RUN)
+  setStatus(
+    downloadInfo,
+    DOWNLOAD_STATUS.RUN,
+    downloadInfo.metadata.url ? undefined : window.i18n.t('download_status_url_getting'),
+  )
   runingTask.set(downloadInfo.id, downloadInfo)
   void handleStartTask(downloadInfo)
 }
@@ -658,65 +735,22 @@ onOpenApiDownload(({ params: { list, quality, listId } }) => {
 
     await createDownloadTasks(list, quality, listId)
 
-    // Build simple-ID -> compound-ID mapping from download list items
-    const compoundIdMap = new Map<string, string>()
+    // Build compound task ID -> raw song ID mapping. OpenAPI clients know the raw
+    // song ID, while the desktop download list uses `${id}_${quality}_${ext}`.
     for (const item of downloadList) {
-      if (item.metadata.isOpenApiTask) continue
       const musicId = item.metadata.musicInfo?.id || ''
-      if (rawIds.has(musicId)) {
-        compoundIdMap.set(item.id, musicId)
-        item.metadata.isOpenApiTask = true
+      if (!rawIds.has(musicId)) continue
+      if (item.metadata.quality !== quality) continue
+      item.metadata.isOpenApiTask = true
+      const meta = rawSongMap.get(musicId)
+      ;(item.metadata as any).openApiRawId = musicId
+      ;(item.metadata as any).openApiName = meta?.name
+      ;(item.metadata as any).openApiSinger = meta?.singer
+      if (!item.metadata.apiSourceName) updateApiSourceName(item)
+      else {
+        throttleUpdateTask([item])
+        sendOpenApiDownloadStatus(item)
       }
     }
-    const compoundIds = new Set(compoundIdMap.keys())
-
-    // Poll download list for status changes
-    const pollInterval = setInterval(() => {
-      let allDone = true
-      for (const item of downloadList) {
-        if (!compoundIds.has(item.id)) continue
-        const status = item.status === 'completed'
-          ? 'completed'
-          : item.status === 'error'
-            ? 'failed'
-            : item.status === 'run'
-              ? 'running'
-              : 'queued'
-
-        if (status !== 'completed' && status !== 'failed') {
-          allDone = false
-        }
-
-        const rawId = compoundIdMap.get(item.id)
-        const meta = rawId ? rawSongMap.get(rawId) : undefined
-        const filePath = item.metadata.filePath || ''
-        const basePath = filePath ? filePath.substring(0, filePath.lastIndexOf('.')) : ''
-        const lyricPath = basePath ? basePath + '.lrc' : ''
-        const lyricJsonPath = basePath ? basePath + '.lyric.json' : ''
-        rendererSend(WIN_MAIN_RENDERER_EVENT_NAME.open_api_download_status, {
-          taskId: item.id,
-          status,
-          error: item.statusText || undefined,
-          filePath: filePath || undefined,
-          lyricPath: lyricPath || undefined,
-          lyricJsonPath: lyricJsonPath || undefined,
-          actualQuality: item.metadata.quality || undefined,
-          actualSource: item.metadata.actualSource || undefined,
-          apiSourceName: item.metadata.apiSourceName || undefined,
-          versionNote: item.metadata.versionNote || undefined,
-          name: meta?.name,
-          singer: meta?.singer,
-          progress: item.progress ?? undefined,
-          speed: item.speed || undefined,
-          verifyResult: (item.metadata as any)._verifyResult || undefined,
-        })
-      }
-      if (allDone && compoundIds.size > 0) {
-        clearInterval(pollInterval)
-      }
-    }, 3000)
-
-    // Backup timeout: stop polling after 30 minutes
-    setTimeout(() => { clearInterval(pollInterval) }, 30 * 60 * 1000)
   })()
 })
