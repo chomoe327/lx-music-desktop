@@ -5,9 +5,11 @@ import musicSdk from '@renderer/utils/musicSdk'
 import apiSourceInfo from '@renderer/utils/musicSdk/api-source-info'
 
 let prevId = ''
+export let pendingUserApiId = ''
 export const setUserApi = async(apiId: string) => {
-  if (prevId == apiId && window.lx.apiInitPromise[1]) return
+  if (prevId == apiId) return
   prevId = apiId
+  let shouldPersistApiSource = true
   window.lx.apiInitPromise[0] = new Promise<boolean>(resolve => {
     window.lx.apiInitPromise[1] = false
     window.lx.apiInitPromise[2] = (result: boolean) => {
@@ -20,8 +22,8 @@ export const setUserApi = async(apiId: string) => {
     qualityList.value = {}
     userApi.status = false
     userApi.message = 'initing'
+    pendingUserApiId = apiId
     apiSource.value = apiId
-    if (apiId != appSetting['common.apiSource']) setApiSource(apiId)
 
     await setUserApiAction(apiId).then(() => {
       if (prevId != apiId) return
@@ -31,6 +33,9 @@ export const setUserApi = async(apiId: string) => {
       console.log(err)
       let api = apiSourceInfo.find(api => !api.disabled)
       if (!api) return
+      shouldPersistApiSource = false
+      pendingUserApiId = ''
+      prevId = api.id
       apiSource.value = api.id
       if (api.id != appSetting['common.apiSource']) setApiSource(api.id)
     })
@@ -43,5 +48,6 @@ export const setUserApi = async(apiId: string) => {
   }
 
   if (prevId != apiId) return
-  if (apiId != appSetting['common.apiSource']) setApiSource(apiId)
+  pendingUserApiId = ''
+  if (shouldPersistApiSource && apiId != appSetting['common.apiSource']) setApiSource(apiId)
 }

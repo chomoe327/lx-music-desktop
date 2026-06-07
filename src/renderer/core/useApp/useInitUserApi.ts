@@ -5,7 +5,7 @@ import { openUrl } from '@common/utils/electron'
 import { apiSource, qualityList, userApi } from '@renderer/store'
 import { appSetting } from '@renderer/store/setting'
 import { dialog } from '@renderer/plugins/Dialog'
-import { setUserApi } from '@renderer/core/apiSource'
+import { pendingUserApiId, setUserApi } from '@renderer/core/apiSource'
 
 const sendUserApiRequest: typeof sendUserApiRequestRemote = async(data) => {
   let stop: () => void
@@ -27,7 +27,7 @@ export default () => {
     userApi.status = status
     userApi.message = message
 
-    if (!apiInfo || (apiInfo.id !== appSetting['common.apiSource'] && apiInfo.id !== apiSource.value)) return
+    if (!apiInfo || (apiInfo.id !== appSetting['common.apiSource'] && apiInfo.id !== apiSource.value && apiInfo.id !== pendingUserApiId)) return
     if (status) {
       if (apiInfo.sources) {
         let apis: any = {}
