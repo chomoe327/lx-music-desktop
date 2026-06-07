@@ -2,7 +2,7 @@ import { onBeforeUnmount, watch } from '@common/utils/vueTools'
 import { useI18n } from '@renderer/plugins/i18n'
 import { onUserApiStatus, getUserApiList, sendUserApiRequest as sendUserApiRequestRemote, userApiRequestCancel, onShowUserApiUpdateAlert } from '@renderer/utils/ipc'
 import { openUrl } from '@common/utils/electron'
-import { qualityList, userApi } from '@renderer/store'
+import { apiSource, qualityList, userApi } from '@renderer/store'
 import { appSetting } from '@renderer/store/setting'
 import { dialog } from '@renderer/plugins/Dialog'
 import { setUserApi } from '@renderer/core/apiSource'
@@ -27,7 +27,7 @@ export default () => {
     userApi.status = status
     userApi.message = message
 
-    if (!apiInfo || apiInfo.id !== appSetting['common.apiSource']) return
+    if (!apiInfo || (apiInfo.id !== appSetting['common.apiSource'] && apiInfo.id !== apiSource.value)) return
     if (status) {
       if (apiInfo.sources) {
         let apis: any = {}

@@ -368,6 +368,18 @@ const normalizeRetryReason = (message?: string) => {
   return reason || 'download failed'
 }
 
+const withTimeout = async<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> => {
+  let timer: NodeJS.Timeout | undefined
+  return await Promise.race([
+    promise.finally(() => {
+      if (timer) clearTimeout(timer)
+    }),
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => { reject(new Error(message)) }, timeoutMs)
+    }),
+  ])
+}
+
 const handleError = (downloadInfo: LX.Download.ListItem, message?: string) => {
   const meta = downloadInfo.metadata as any
   if (meta._retryPending) return
@@ -486,11 +498,12 @@ const verifyAndFinalize = async(downloadInfo: LX.Download.ListItem, skipVerify =
       updateApiSourceName(downloadInfo, nextApi.id, false)
       resetDownloadProgress(downloadInfo)
       setStatusText(downloadInfo, `正在初始化API源: ${nextApi.name}...`)
-      await setUserApi(nextApi.id)
+      await withTimeout(setUserApi(nextApi.id), 15000, `API源 ${nextApi.name} 初始化超时`)
       updateApiSourceName(downloadInfo, nextApi.id, false)
       setStatusText(downloadInfo, `等待API源就绪: ${nextApi.name}...`)
       await new Promise(resolve => setTimeout(resolve, 2000))
-      await window.lx.apiInitPromise[0]
+      const initResult = await withTimeout(window.lx.apiInitPromise[0], 15000, `API源 ${nextApi.name} 就绪超时`)
+      if (!initResult) throw new Error(`API源 ${nextApi.name} 初始化失败`)
       // Reset URL and restart
       downloadInfo.metadata.url = null
       downloadInfo.metadata.actualSource = ''
@@ -501,6 +514,7 @@ const verifyAndFinalize = async(downloadInfo: LX.Download.ListItem, skipVerify =
       void startTask(downloadInfo)
     } catch (err) {
       console.log(`Failed to switch to ${nextApi.name}:`, err)
+      if (!triedApis.includes(nextApi.id)) triedApis.push(nextApi.id)
       setStatusText(downloadInfo, `API源 ${nextApi.name} 初始化失败，尝试下一个...`)
       void verifyAndFinalize(downloadInfo, skipVerify)
     }
@@ -512,9 +526,9 @@ const verifyAndFinalize = async(downloadInfo: LX.Download.ListItem, skipVerify =
   ;(downloadInfo.metadata as any)._retrying = false
   if (firstApi && apiSource.value !== firstApi) {
     setStatusText(downloadInfo, '换源重试结束，正在恢复原始API源...')
-    await setUserApi(firstApi)
+    await withTimeout(setUserApi(firstApi), 15000, '恢复原始API源超时').catch(err => { console.log(err) })
     await new Promise(resolve => setTimeout(resolve, 2000))
-    await window.lx.apiInitPromise[0]
+    await withTimeout(window.lx.apiInitPromise[0], 15000, '等待原始API源就绪超时').catch(err => { console.log(err) })
   }
   void window.lx.worker.download.removeTask(downloadInfo.id)
   runingTask.delete(downloadInfo.id)
