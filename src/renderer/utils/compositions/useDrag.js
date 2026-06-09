@@ -8,11 +8,16 @@ const noop = () => {}
 
 export default ({ dom_list, dragingItemClassName, filter, handle = null, disabled: initDisabled = true, onUpdate, onStart = noop, onEnd = noop }) => {
   let sortable
+  let sortableEl
   let disabled = initDisabled
 
   const init = () => {
-    if (sortable || !dom_list.value) return
-    sortable = Sortable.create(dom_list.value, {
+    const el = dom_list.value
+    if (!el) return
+    if (sortable && sortableEl == el) return
+    sortable?.destroy()
+    sortableEl = el
+    sortable = Sortable.create(el, {
       animation: 150,
       disabled,
       forceFallback: false,
@@ -48,9 +53,11 @@ export default ({ dom_list, dragingItemClassName, filter, handle = null, disable
   onBeforeUnmount(() => {
     sortable?.destroy()
     sortable = null
+    sortableEl = null
   })
 
   return {
+    init,
     setDisabled(enable) {
       disabled = enable
       if (!sortable) return

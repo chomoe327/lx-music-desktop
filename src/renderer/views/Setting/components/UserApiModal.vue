@@ -1,5 +1,5 @@
 <template lang="pug">
-material-modal(:show="modelValue" bg-close teleport="#view" @close="handleClose")
+material-modal(:show="modelValue" bg-close teleport="#view" @after-enter="initDrag" @close="handleClose")
   main.scroll(:class="$style.main")
     h2 {{ $t('user_api__title') }}
     ul.scroll(v-if="apiList.length" ref="dom_list" :class="$style.content")
@@ -40,7 +40,7 @@ import { openUrl } from '@common/utils/electron'
 import apiSourceInfo from '@renderer/utils/musicSdk/api-source-info'
 import { userApi } from '@renderer/store'
 import { appSetting, updateSetting } from '@renderer/store/setting'
-import { computed, ref } from '@common/utils/vueTools'
+import { computed, nextTick, ref, watch } from '@common/utils/vueTools'
 import { dialog } from '@renderer/plugins/Dialog'
 import useDrag from '@renderer/utils/compositions/useDrag'
 
@@ -76,12 +76,15 @@ export default {
         void dialog(err.message)
       })
     }
-    useDrag({
+    const { init: initDrag } = useDrag({
       dom_list,
       handle: 'user-api-drag-handle',
       disabled: false,
       dragingItemClassName: 'user-api-dragging',
       onUpdate: saveApiOrder,
+    })
+    watch(() => userApi.list.length, () => {
+      void nextTick(initDrag)
     })
 
     return {
@@ -90,6 +93,7 @@ export default {
       appSetting,
       isShowOnlineImportModal,
       dom_list,
+      initDrag,
     }
   },
   methods: {
