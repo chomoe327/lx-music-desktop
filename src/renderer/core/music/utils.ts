@@ -19,25 +19,6 @@ const otherSourceCache = new Map<LX.Music.MusicInfo | LX.Download.ListItem, LX.M
 export const existTimeExp = /\[\d{1,2}:.*\d{1,4}\]/
 
 /**
- * Get the priority score for a user-imported API source.
- * Higher score = tried first during auto-switch fallback.
- */
-const getApiSourcePriority = (apiName: string): number => {
-  const name = apiName.toLowerCase()
-  // Tier 1: 赞助 sources (paid, highest quality)
-  if (name.includes('赞助')) return 100
-  // Tier 2: curated quality sources
-  if (name.includes('全豆要')) return 50
-  if (name.includes('长青') || name.includes('长靑')) return 49
-  if (name.includes('念心')) return 48
-  if (name.includes('音乐下载器')) return 47
-  if (name.includes('洛雪音乐源')) return 46
-  if (name.includes('独家音源')) return 45
-  // Tier 3: everything else
-  return 0
-}
-
-/**
  * Try resolving the song URL by switching to other user-imported API sources
  * when the current source can't find the song at the requested quality.
  */
@@ -57,7 +38,6 @@ const tryOtherApiSources = async(
   const originalApiSource = apiSource.value
   const otherApis = userApi.list
     .filter(api => api.id !== originalApiSource)
-    .sort((a, b) => getApiSourcePriority(b.name) - getApiSourcePriority(a.name))
 
   for (const api of otherApis) {
     try {
@@ -444,8 +424,6 @@ export const handleGetOnlineMusicUrl = async({ musicInfo, quality, onToggleSourc
     })
   })
 }
-
-
 
 export const getOnlineOtherSourcePicUrl = async({ musicInfos, onToggleSource, isRefresh, retryedSource = [] }: {
   musicInfos: LX.Music.MusicInfoOnline[]

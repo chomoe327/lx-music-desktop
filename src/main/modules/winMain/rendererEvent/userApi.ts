@@ -8,6 +8,7 @@ import {
   getStatus,
   request,
   cancelRequest,
+  setApiOrder,
   setAllowShowUpdateAlert,
 } from '@main/modules/userApi'
 import { sendEvent } from '@main/modules/winMain/main'
@@ -23,6 +24,10 @@ export default () => {
 
   mainHandle<LX.UserApi.UserApiSetApiParams>(WIN_MAIN_RENDERER_EVENT_NAME.set_user_api, async({ params: apiId }) => {
     await setApi(apiId)
+  })
+
+  mainHandle<LX.UserApi.UserApiSetOrderParams, LX.UserApi.UserApiInfo[]>(WIN_MAIN_RENDERER_EVENT_NAME.set_user_api_order, async({ params: apiIds }) => {
+    return setApiOrder(apiIds)
   })
 
   mainHandle<LX.UserApi.UserApiInfo[]>(WIN_MAIN_RENDERER_EVENT_NAME.get_user_api_list, async() => {

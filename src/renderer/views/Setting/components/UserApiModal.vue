@@ -2,8 +2,12 @@
 material-modal(:show="modelValue" bg-close teleport="#view" @close="handleClose")
   main.scroll(:class="$style.main")
     h2 {{ $t('user_api__title') }}
-    ul.scroll(v-if="apiList.length" :class="$style.content")
+    ul.scroll(v-if="apiList.length" ref="dom_list" :class="$style.content")
       li(v-for="(api, index) in apiList" :key="api.id" :class="[$style.listItem, {[$style.active]: appSetting['common.apiSource'] == api.id}]")
+        button.user-api-drag-handle(:class="$style.dragHandle" type="button" aria-label="拖拽排序")
+          span
+          span
+          span
         div(:class="$style.listLeft")
           h3
             | {{ api.name }}
@@ -30,14 +34,15 @@ material-modal(:show="modelValue" bg-close teleport="#view" @close="handleClose"
 </template>
 
 <script>
-import { importUserApi, removeUserApi, showSelectDialog, setAllowShowUserApiUpdateAlert } from '@renderer/utils/ipc'
+import { importUserApi, removeUserApi, showSelectDialog, setAllowShowUserApiUpdateAlert, setUserApiOrder } from '@renderer/utils/ipc'
 import { readFile } from '@common/utils/nodejs'
 import { openUrl } from '@common/utils/electron'
 import apiSourceInfo from '@renderer/utils/musicSdk/api-source-info'
 import { userApi } from '@renderer/store'
 import { appSetting, updateSetting } from '@renderer/store/setting'
-import { computed, ref } from '@common/utils/vueTools'
+import { computed, onMounted, ref } from '@common/utils/vueTools'
 import { dialog } from '@renderer/plugins/Dialog'
+import useDrag from '@renderer/utils/compositions/useDrag'
 
 import UserApiOnlineImportModal from './UserApiOnlineImportModal.vue'
 
@@ -55,12 +60,38 @@ export default {
   setup() {
     const isShowOnlineImportModal = ref(false)
     const apiList = computed(() => userApi.list)
+    const dom_list = ref(null)
+    const saveApiOrder = async(newIndex, oldIndex) => {
+      if (newIndex == null || oldIndex == null || newIndex == oldIndex) return
+      const prevList = [...userApi.list]
+      const nextList = [...userApi.list]
+      const [api] = nextList.splice(oldIndex, 1)
+      if (!api) return
+      nextList.splice(newIndex, 0, api)
+      userApi.list = nextList
+      await setUserApiOrder(nextList.map(api => api.id)).then(apiList => {
+        userApi.list = apiList
+      }).catch(err => {
+        userApi.list = prevList
+        void dialog(err.message)
+      })
+    }
+    const drag = useDrag({
+      dom_list,
+      handle: 'user-api-drag-handle',
+      dragingItemClassName: 'user-api-dragging',
+      onUpdate: saveApiOrder,
+    })
+    onMounted(() => {
+      drag.setDisabled(false)
+    })
 
     return {
       userApi,
       apiList,
       appSetting,
       isShowOnlineImportModal,
+      dom_list,
     }
   },
   methods: {
@@ -187,6 +218,9 @@ export default {
     word-break: break-all;
   }
 }
+:global(.user-api-dragging) {
+  background-color: var(--color-primary-background-hover);
+}
 .noitem {
   height: 100px;
   font-size: 18px;
@@ -201,6 +235,31 @@ export default {
   display: flex;
   flex-flow: column nowrap;
   justify-content: center;
+}
+.dragHandle {
+  flex: none;
+  width: 24px;
+  height: 34px;
+  margin-right: 8px;
+  display: flex;
+  flex-flow: column nowrap;
+  justify-content: center;
+  align-items: center;
+  border: 0;
+  background: none;
+  color: var(--color-font-label);
+  cursor: move;
+  opacity: .7;
+  span {
+    width: 14px;
+    height: 2px;
+    margin: 2px 0;
+    border-radius: 2px;
+    background-color: currentColor;
+  }
+  &:hover {
+    opacity: 1;
+  }
 }
 .listBtn {
   flex: none;

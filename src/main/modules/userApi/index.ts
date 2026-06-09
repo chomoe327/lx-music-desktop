@@ -1,5 +1,5 @@
 import { closeWindow } from './main'
-import { getUserApis, importApi as handleImportApi, removeApi as handleRemoveApi, setAllowShowUpdateAlert as saveAllowShowUpdateAlert } from './utils'
+import { getUserApis, importApi as handleImportApi, removeApi as handleRemoveApi, setApiOrder as saveApiOrder, setAllowShowUpdateAlert as saveAllowShowUpdateAlert } from './utils'
 import { loadApi, setAllowShowUpdateAlert as setRendererEventAllowShowUpdateAlert, init } from './rendererEvent/rendererEvent'
 
 let userApiId: string | null
@@ -18,6 +18,11 @@ export const removeApi = async(ids: string[]): Promise<LX.UserApi.UserApiInfo[]>
     await closeWindow()
   }
   handleRemoveApi(ids)
+  return getUserApis()
+}
+
+export const setApiOrder = (ids: string[]): LX.UserApi.UserApiInfo[] => {
+  saveApiOrder(ids)
   return getUserApis()
 }
 

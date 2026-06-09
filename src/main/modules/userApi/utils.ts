@@ -140,6 +140,17 @@ export const removeApi = (ids: string[]) => {
   saveData()
 }
 
+export const setApiOrder = (ids: string[]) => {
+  if (!userApis) return
+  const apiMap = new Map(userApis.map(api => [api.id, api]))
+  const orderedApis = ids
+    .map(id => apiMap.get(id))
+    .filter((api): api is LX.UserApi.UserApiInfo => api != null)
+  const remainingApis = userApis.filter(api => !ids.includes(api.id))
+  userApis = [...orderedApis, ...remainingApis]
+  saveData()
+}
+
 export const setAllowShowUpdateAlert = (id: string, enable: boolean) => {
   const targetApi = userApis?.find(api => api.id == id)
   if (!targetApi) return

@@ -475,12 +475,8 @@ const verifyAndFinalize = async(downloadInfo: LX.Download.ListItem, skipVerify =
     triedApis.push(apiSource.value)
   }
 
-  // Find next untried API source (try all, priority sponsors first)
-  const priorityApis = userApi.list.filter(a =>
-    a.name.includes('赞助') || a.name.includes('ikun') || a.name.includes('聆澜'),
-  )
-  const otherApis = userApi.list.filter(a => !priorityApis.includes(a))
-  const orderedApis = [...priorityApis, ...otherApis]
+  // Find next untried API source using the user-defined order.
+  const orderedApis = userApi.list
   console.log(`[verifyAndFinalize] skipVerify=${skipVerify} triedApis=${JSON.stringify(triedApis)} userApi.list=${userApi.list.length} orderedApis=${orderedApis.length} apiSource=${apiSource.value}`)
   const nextApi = orderedApis.find(a => !triedApis.includes(a.id))
   if (nextApi) {
