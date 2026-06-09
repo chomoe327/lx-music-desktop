@@ -1,13 +1,9 @@
 <template lang="pug">
-material-modal(:show="modelValue" bg-close teleport="#view" @after-enter="initDrag" @close="handleClose")
+material-modal(:show="modelValue" bg-close teleport="#view" @close="handleClose")
   main.scroll(:class="$style.main")
     h2 {{ $t('user_api__title') }}
-    ul.scroll(v-if="apiList.length" ref="dom_list" :class="$style.content")
+    ul.scroll(v-if="apiList.length" :class="$style.content")
       li(v-for="(api, index) in apiList" :key="api.id" :class="[$style.listItem, {[$style.active]: appSetting['common.apiSource'] == api.id}]")
-        button.user-api-drag-handle(:class="$style.dragHandle" type="button" aria-label="拖拽排序")
-          span
-          span
-          span
         div(:class="$style.listLeft")
           h3
             | {{ api.name }}
@@ -16,9 +12,13 @@ material-modal(:show="modelValue" bg-close teleport="#view" @after-enter="initDr
           p {{ api.description }}
           div
             base-checkbox(:id="`user_api_${api.id}`" v-model="api.allowShowUpdateAlert" :class="$style.checkbox" :label="$t('user_api__allow_show_update_alert')" @change="handleChangeAllowUpdateAlert(api, $event)")
-        base-btn(:class="$style.listBtn" outline :aria-label="$t('user_api__btn_remove')" @click.stop="handleRemove(index)")
-          svg(v-once version="1.1" xmlns="http://www.w3.org/2000/svg" xlink="http://www.w3.org/1999/xlink" viewBox="0 0 212.982 212.982" space="preserve")
-            use(xlink:href="#icon-delete")
+        div(:class="$style.listActions")
+          base-btn(:class="$style.orderBtn" outline :disabled="index == 0" aria-label="置顶" @click.stop="handleMove(index, 0)") 顶
+          base-btn(:class="$style.orderBtn" outline :disabled="index == 0" aria-label="上移" @click.stop="handleMove(index, index - 1)") 上
+          base-btn(:class="$style.orderBtn" outline :disabled="index == apiList.length - 1" aria-label="下移" @click.stop="handleMove(index, index + 1)") 下
+          base-btn(:class="$style.listBtn" outline :aria-label="$t('user_api__btn_remove')" @click.stop="handleRemove(index)")
+            svg(v-once version="1.1" xmlns="http://www.w3.org/2000/svg" xlink="http://www.w3.org/1999/xlink" viewBox="0 0 212.982 212.982" space="preserve")
+              use(xlink:href="#icon-delete")
     div(v-else :class="$style.content")
       div(:class="$style.noitem") {{ $t('user_api__noitem') }}
     div(:class="$style.note")
@@ -40,9 +40,8 @@ import { openUrl } from '@common/utils/electron'
 import apiSourceInfo from '@renderer/utils/musicSdk/api-source-info'
 import { userApi } from '@renderer/store'
 import { appSetting, updateSetting } from '@renderer/store/setting'
-import { computed, nextTick, ref, watch } from '@common/utils/vueTools'
+import { computed, ref } from '@common/utils/vueTools'
 import { dialog } from '@renderer/plugins/Dialog'
-import useDrag from '@renderer/utils/compositions/useDrag'
 
 import UserApiOnlineImportModal from './UserApiOnlineImportModal.vue'
 
@@ -60,14 +59,13 @@ export default {
   setup() {
     const isShowOnlineImportModal = ref(false)
     const apiList = computed(() => userApi.list)
-    const dom_list = ref(null)
-    const saveApiOrder = async(newIndex, oldIndex) => {
-      if (newIndex == null || oldIndex == null || newIndex == oldIndex) return
+    const handleMove = async(index, targetIndex) => {
+      if (targetIndex < 0 || targetIndex >= userApi.list.length || index == targetIndex) return
       const prevList = [...userApi.list]
       const nextList = [...userApi.list]
-      const [api] = nextList.splice(oldIndex, 1)
+      const [api] = nextList.splice(index, 1)
       if (!api) return
-      nextList.splice(newIndex, 0, api)
+      nextList.splice(targetIndex, 0, api)
       userApi.list = nextList
       await setUserApiOrder(nextList.map(api => api.id)).then(apiList => {
         userApi.list = apiList
@@ -76,24 +74,13 @@ export default {
         void dialog(err.message)
       })
     }
-    const { init: initDrag } = useDrag({
-      dom_list,
-      handle: 'user-api-drag-handle',
-      disabled: false,
-      dragingItemClassName: 'user-api-dragging',
-      onUpdate: saveApiOrder,
-    })
-    watch(() => userApi.list.length, () => {
-      void nextTick(initDrag)
-    })
 
     return {
       userApi,
       apiList,
       appSetting,
       isShowOnlineImportModal,
-      dom_list,
-      initDrag,
+      handleMove,
     }
   },
   methods: {
@@ -220,9 +207,6 @@ export default {
     word-break: break-all;
   }
 }
-:global(.user-api-dragging) {
-  background-color: var(--color-primary-background-hover);
-}
 .noitem {
   height: 100px;
   font-size: 18px;
@@ -238,35 +222,30 @@ export default {
   flex-flow: column nowrap;
   justify-content: center;
 }
-.dragHandle {
+.listActions {
   flex: none;
-  width: 24px;
-  height: 34px;
-  margin-right: 8px;
   display: flex;
-  flex-flow: column nowrap;
+  flex-flow: row nowrap;
   justify-content: center;
   align-items: center;
-  border: 0;
-  background: none;
-  color: var(--color-font-label);
-  cursor: move;
-  opacity: .7;
-  span {
-    width: 14px;
-    height: 2px;
-    margin: 2px 0;
-    border-radius: 2px;
-    background-color: currentColor;
-  }
-  &:hover {
-    opacity: 1;
+  margin-left: 8px;
+}
+.orderBtn {
+  flex: none;
+  min-width: 0;
+  height: 30px;
+  width: 30px;
+  padding: 0 !important;
+  font-size: 12px;
+  + .orderBtn {
+    margin-left: 4px;
   }
 }
 .listBtn {
   flex: none;
   height: 30px;
   width: 30px;
+  margin-left: 4px;
   padding: 0;
   display: flex;
   justify-content: center;
