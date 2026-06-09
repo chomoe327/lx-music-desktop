@@ -6,9 +6,9 @@ Sortable.mount(new AutoScroll())
 
 const noop = () => {}
 
-export default ({ dom_list, dragingItemClassName, filter, handle = null, onUpdate, onStart = noop, onEnd = noop }) => {
+export default ({ dom_list, dragingItemClassName, filter, handle = null, disabled: initDisabled = true, onUpdate, onStart = noop, onEnd = noop }) => {
   let sortable
-  let disabled = true
+  let disabled = initDisabled
 
   const init = () => {
     if (sortable || !dom_list.value) return

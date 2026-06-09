@@ -40,7 +40,7 @@ import { openUrl } from '@common/utils/electron'
 import apiSourceInfo from '@renderer/utils/musicSdk/api-source-info'
 import { userApi } from '@renderer/store'
 import { appSetting, updateSetting } from '@renderer/store/setting'
-import { computed, onMounted, ref } from '@common/utils/vueTools'
+import { computed, ref } from '@common/utils/vueTools'
 import { dialog } from '@renderer/plugins/Dialog'
 import useDrag from '@renderer/utils/compositions/useDrag'
 
@@ -76,14 +76,12 @@ export default {
         void dialog(err.message)
       })
     }
-    const drag = useDrag({
+    useDrag({
       dom_list,
       handle: 'user-api-drag-handle',
+      disabled: false,
       dragingItemClassName: 'user-api-dragging',
       onUpdate: saveApiOrder,
-    })
-    onMounted(() => {
-      drag.setDisabled(false)
     })
 
     return {
